@@ -81,6 +81,7 @@ dependencies = [
     "pandas>=2.3.0",
     "pylance>=0.31.0",
     "voyageai>=0.2.0",
+    "boto3>=1.35.0",
     "httpx>=0.28.1",
     "pymupdf>=1.23.0",
     "rich>=13.0.0",

@@ -51,7 +51,7 @@ def validate_provider_args(
     if not provider:
         logger.error(
             """
-            No embedding provider configured. Choose from: openai, voyageai.
+            No embedding provider configured. Choose from: openai, voyageai, bedrock.
             To fix this, you can:
             1) Generate a config at https://chunkhound.ai
             2) Set via --provider flag
@@ -84,6 +84,8 @@ def validate_provider_args(
                 "(not required when using a custom --base-url)"
             )
             return False
+    elif provider == "bedrock":
+        pass  # credentials come from config (aws_access_key_id / aws_secret_access_key)
     else:
         logger.error(f"Unknown provider: {provider}")
         return False

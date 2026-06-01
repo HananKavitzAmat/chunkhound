@@ -17,6 +17,9 @@ if TYPE_CHECKING:
         EmbeddingProvider,
         OpenAIEmbeddingProvider,
     )
+    from chunkhound.providers.embeddings.bedrock_provider import (
+        BedrockEmbeddingProvider,
+    )
 
 
 class EmbeddingProviderFactory:
@@ -59,6 +62,8 @@ class EmbeddingProviderFactory:
             return EmbeddingProviderFactory._create_openai_provider(provider_config)
         elif config.provider == "voyageai":
             return EmbeddingProviderFactory._create_voyageai_provider(provider_config)
+        elif config.provider == "bedrock":
+            return EmbeddingProviderFactory._create_bedrock_provider(provider_config)
         else:
             raise ValueError(f"Unsupported provider: {config.provider}")
 
@@ -204,6 +209,52 @@ class EmbeddingProviderFactory:
             raise ValueError(f"Failed to create VoyageAI provider: {e}") from e
 
     @staticmethod
+    def _create_bedrock_provider(config: dict[str, Any]) -> "BedrockEmbeddingProvider":
+        """Create AWS Bedrock embedding provider."""
+        from chunkhound.providers.embeddings.bedrock_provider import (
+            BedrockEmbeddingProvider,
+        )
+
+        aws_access_key_id = config.get("aws_access_key_id")
+        aws_secret_access_key = config.get("aws_secret_access_key")
+        aws_region = config.get("aws_region", "us-east-1")
+        model = config.get("model")
+
+        if not model:
+            raise ValueError("Model not specified in provider configuration")
+
+        rerank_url = config.get("rerank_url")
+        rerank_model = config.get("rerank_model")
+        rerank_format = config.get("rerank_format", "auto")
+        rerank_batch_size = config.get("rerank_batch_size")
+        rerank_ssl_verify = config.get("rerank_ssl_verify", True)
+
+        logger.debug(
+            f"Creating Bedrock provider: model={model}, region={aws_region}, "
+            f"aws_access_key_id={'***' if aws_access_key_id else None}, "
+            f"rerank_url={rerank_url}, rerank_model={rerank_model}, "
+            f"rerank_format={rerank_format}"
+        )
+
+        try:
+            return BedrockEmbeddingProvider(
+                aws_access_key_id=aws_access_key_id,
+                aws_secret_access_key=aws_secret_access_key,
+                aws_region=aws_region,
+                model=model,
+                batch_size=config.get("batch_size", 100),
+                timeout=config.get("timeout", 30),
+                retry_attempts=config.get("max_retries", 3),
+                rerank_url=rerank_url,
+                rerank_model=rerank_model,
+                rerank_format=rerank_format,
+                rerank_batch_size=rerank_batch_size,
+                rerank_ssl_verify=rerank_ssl_verify,
+            )
+        except Exception as e:
+            raise ValueError(f"Failed to create Bedrock provider: {e}") from e
+
+    @staticmethod
     def get_supported_providers() -> list[str]:
         """
         Get list of supported embedding providers.
@@ -211,7 +262,7 @@ class EmbeddingProviderFactory:
         Returns:
             List of supported provider names
         """
-        return ["openai", "voyageai", "openai_compatible"]
+        return ["openai", "voyageai", "bedrock", "openai_compatible"]
 
     @staticmethod
     def validate_provider_dependencies(provider: str) -> tuple[bool, str | None]:
@@ -234,6 +285,10 @@ class EmbeddingProviderFactory:
             elif provider == "voyageai":
                 from chunkhound.providers.embeddings.voyageai_provider import (  # noqa: F401
                     VoyageAIEmbeddingProvider,
+                )
+            elif provider == "bedrock":
+                from chunkhound.providers.embeddings.bedrock_provider import (  # noqa: F401
+                    BedrockEmbeddingProvider,
                 )
 
             return True, None

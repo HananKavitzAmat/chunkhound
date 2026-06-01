@@ -252,7 +252,7 @@ def main() -> None:
         ):
             logger.error(
                 "Embedding provider must be specified. "
-                "Choose from: openai, voyageai, or use an OpenAI-compatible endpoint.\n"
+                "Choose from: openai, voyageai, bedrock, or use an OpenAI-compatible endpoint.\n"
                 "Set via --provider, CHUNKHOUND_EMBEDDING__PROVIDER environment "
                 "variable, or in config file."
             )

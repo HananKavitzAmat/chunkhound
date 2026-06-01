@@ -96,8 +96,8 @@ class EmbeddingConfig(BaseSettings):
     )
 
     # Provider Selection
-    provider: Literal["openai", "voyageai"] = Field(
-        default="openai", description="Embedding provider (openai, voyageai)"
+    provider: Literal["openai", "voyageai", "bedrock"] = Field(
+        default="openai", description="Embedding provider (openai, voyageai, bedrock)"
     )
 
     # Common Configuration
@@ -133,6 +133,19 @@ class EmbeddingConfig(BaseSettings):
 
     azure_deployment: str | None = Field(
         default=None, description="Azure OpenAI deployment name"
+    )
+
+    # AWS Bedrock Configuration
+    aws_access_key_id: SecretStr | None = Field(
+        default=None, description="AWS access key ID for Bedrock"
+    )
+
+    aws_secret_access_key: SecretStr | None = Field(
+        default=None, description="AWS secret access key for Bedrock"
+    )
+
+    aws_region: str = Field(
+        default="us-east-1", description="AWS region for Bedrock"
     )
 
     rerank_model: str | None = Field(
@@ -318,6 +331,14 @@ class EmbeddingConfig(BaseSettings):
         if self.azure_deployment:
             base_config["azure_deployment"] = self.azure_deployment
 
+        # Add AWS Bedrock configuration if available
+        if self.aws_access_key_id:
+            base_config["aws_access_key_id"] = self.aws_access_key_id.get_secret_value()
+        if self.aws_secret_access_key:
+            base_config["aws_secret_access_key"] = self.aws_secret_access_key.get_secret_value()
+        if self.provider == "bedrock":
+            base_config["aws_region"] = self.aws_region
+
         # Add rerank configuration if available
         if self.rerank_model:
             base_config["rerank_model"] = self.rerank_model
@@ -344,6 +365,8 @@ class EmbeddingConfig(BaseSettings):
         # Provider defaults
         if self.provider == "voyageai":
             return VOYAGE_DEFAULT_MODEL
+        elif self.provider == "bedrock":
+            return "amazon.titan-embed-text-v2:0"
         else:  # openai
             return "text-embedding-3-small"
 
@@ -364,6 +387,11 @@ class EmbeddingConfig(BaseSettings):
             else:
                 # Custom endpoints don't require API key
                 return True
+        elif self.provider == "bedrock":
+            return (
+                self.aws_access_key_id is not None
+                and self.aws_secret_access_key is not None
+            )
         else:
             # VoyageAI: only the official endpoint requires an API key
             if is_official_voyageai_endpoint(self.base_url):
@@ -391,6 +419,15 @@ class EmbeddingConfig(BaseSettings):
             # For OpenAI provider, only require API key for official endpoints
             elif is_official_openai_endpoint(self.base_url) and not self.api_key:
                 missing.append("api_key (set CHUNKHOUND_EMBEDDING__API_KEY)")
+        elif self.provider == "bedrock":
+            if not self.aws_access_key_id:
+                missing.append(
+                    "aws_access_key_id (set CHUNKHOUND_EMBEDDING__AWS_ACCESS_KEY_ID)"
+                )
+            if not self.aws_secret_access_key:
+                missing.append(
+                    "aws_secret_access_key (set CHUNKHOUND_EMBEDDING__AWS_SECRET_ACCESS_KEY)"
+                )
         else:
             # For voyageai with a custom endpoint, API key is optional
             if not self.api_key and not self.base_url:
@@ -411,8 +448,8 @@ class EmbeddingConfig(BaseSettings):
         parser.add_argument(
             "--provider",
             "--embedding-provider",
-            choices=["openai", "voyageai"],
-            help="Embedding provider (openai or voyageai)",
+            choices=["openai", "voyageai", "bedrock"],
+            help="Embedding provider (openai, voyageai, or bedrock)",
         )
 
         parser.add_argument(
@@ -477,6 +514,25 @@ class EmbeddingConfig(BaseSettings):
             help="Azure OpenAI deployment name",
         )
 
+        # AWS Bedrock arguments
+        parser.add_argument(
+            "--aws-access-key-id",
+            "--embedding-aws-access-key-id",
+            help="AWS access key ID for Bedrock",
+        )
+
+        parser.add_argument(
+            "--aws-secret-access-key",
+            "--embedding-aws-secret-access-key",
+            help="AWS secret access key for Bedrock",
+        )
+
+        parser.add_argument(
+            "--aws-region",
+            "--embedding-aws-region",
+            help="AWS region for Bedrock (default: us-east-1)",
+        )
+
     @classmethod
     def load_from_env(cls) -> dict[str, Any]:
         """Load embedding config from environment variables.
@@ -522,6 +578,14 @@ class EmbeddingConfig(BaseSettings):
             config["azure_endpoint"] = azure_endpoint
         if azure_deployment := os.getenv("CHUNKHOUND_EMBEDDING__AZURE_DEPLOYMENT"):
             config["azure_deployment"] = azure_deployment
+
+        # AWS Bedrock configuration
+        if aws_access_key_id := os.getenv("CHUNKHOUND_EMBEDDING__AWS_ACCESS_KEY_ID"):
+            config["aws_access_key_id"] = aws_access_key_id
+        if aws_secret_access_key := os.getenv("CHUNKHOUND_EMBEDDING__AWS_SECRET_ACCESS_KEY"):
+            config["aws_secret_access_key"] = aws_secret_access_key
+        if aws_region := os.getenv("CHUNKHOUND_EMBEDDING__AWS_REGION"):
+            config["aws_region"] = aws_region
 
         # Fallback: provider-specific env vars (lower priority than CHUNKHOUND_EMBEDDING__ vars)
         if "api_key" not in config:
@@ -603,6 +667,20 @@ class EmbeddingConfig(BaseSettings):
             and args.embedding_azure_deployment
         ):
             overrides["azure_deployment"] = args.embedding_azure_deployment
+
+        # Handle AWS Bedrock arguments
+        if hasattr(args, "aws_access_key_id") and args.aws_access_key_id:
+            overrides["aws_access_key_id"] = args.aws_access_key_id
+        if hasattr(args, "embedding_aws_access_key_id") and args.embedding_aws_access_key_id:
+            overrides["aws_access_key_id"] = args.embedding_aws_access_key_id
+        if hasattr(args, "aws_secret_access_key") and args.aws_secret_access_key:
+            overrides["aws_secret_access_key"] = args.aws_secret_access_key
+        if hasattr(args, "embedding_aws_secret_access_key") and args.embedding_aws_secret_access_key:
+            overrides["aws_secret_access_key"] = args.embedding_aws_secret_access_key
+        if hasattr(args, "aws_region") and args.aws_region:
+            overrides["aws_region"] = args.aws_region
+        if hasattr(args, "embedding_aws_region") and args.embedding_aws_region:
+            overrides["aws_region"] = args.embedding_aws_region
 
         # Handle no-embeddings flag (special case - disables embeddings)
         if hasattr(args, "no_embeddings") and args.no_embeddings:
