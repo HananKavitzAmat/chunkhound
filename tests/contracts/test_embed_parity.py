@@ -163,7 +163,11 @@ class TestRequestShapeParity:
     and shared_utils.build_dimension_request_param):
 
     - ``dimensions`` is included iff output_dims is set AND NOT client_side_truncation
-      AND (matryoshka OR custom base_url OR Azure).
+      AND (matryoshka OR custom base_url OR Azure OR the model is unknown to
+      ``OPENAI_MODEL_CONFIG``). The "unknown model" branch can't be exercised
+      here since this harness always sets a custom base_url (see
+      ``dimensions_sent_for_unknown_model_on_official_endpoint`` in
+      ``src/embed/openai.rs`` for the official-endpoint case).
     - For standard (non-Azure) OpenAI: always ``Authorization: Bearer <key>``.
     - For VoyageAI: body always includes ``"input_type": "document"`` and
       ``"truncation": true``; dimension param name is ``"output_dimension"``.

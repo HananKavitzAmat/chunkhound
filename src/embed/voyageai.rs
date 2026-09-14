@@ -169,6 +169,7 @@ mod tests {
             base_url: Some(base_url),
             output_dims: None,
             matryoshka: false,
+            model_known: true,
             client_side_truncation: false,
             api_version: None,
             ssl_verify: true,

@@ -8,6 +8,27 @@ use std::sync::atomic::AtomicUsize;
 
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 
+/// Mirrors Python's `dimensions` gate in
+/// `openai_provider._build_embedding_request_kwargs`: the param is withheld
+/// only when the endpoint is trusted as official (no custom `base_url`, not
+/// Azure) AND the model is a *known*, non-matryoshka entry in
+/// `OPENAI_MODEL_CONFIG`. A custom endpoint, a matryoshka model, or an
+/// unrecognized model are all trusted to accept (or reject) the parameter
+/// live rather than have it withheld based on a static table lookup that
+/// can't speak for them.
+fn should_send_dimensions(
+    output_dims_set: bool,
+    client_side_truncation: bool,
+    matryoshka: bool,
+    is_azure: bool,
+    has_custom_base_url: bool,
+    model_known: bool,
+) -> bool {
+    output_dims_set
+        && !client_side_truncation
+        && (matryoshka || is_azure || has_custom_base_url || !model_known)
+}
+
 #[derive(Deserialize)]
 struct OpenAiResponse {
     data: Vec<OpenAiEmbedding>,
@@ -84,9 +105,14 @@ impl OpenAiProvider {
             },
             "input": texts,
         });
-        let can_send_dimensions = self.config.output_dims.is_some()
-            && !self.config.client_side_truncation
-            && (self.config.matryoshka || self.config.is_azure || self.config.base_url.is_some());
+        let can_send_dimensions = should_send_dimensions(
+            self.config.output_dims.is_some(),
+            self.config.client_side_truncation,
+            self.config.matryoshka,
+            self.config.is_azure,
+            self.config.base_url.is_some(),
+            self.config.model_known,
+        );
         if can_send_dimensions {
             body["dimensions"] = serde_json::json!(self.config.output_dims);
         }
@@ -235,6 +261,7 @@ mod tests {
             base_url: Some(base_url),
             output_dims: None,
             matryoshka: false,
+            model_known: true,
             client_side_truncation: false,
             api_version: None,
             ssl_verify: true,
@@ -244,6 +271,67 @@ mod tests {
             max_tokens_per_batch: 8191,
             max_items_per_batch: 100,
         }
+    }
+
+    #[test]
+    fn dimensions_withheld_for_known_model_on_official_endpoint() {
+        // The only case where dimensions must be withheld: official endpoint
+        // (no custom base_url, not Azure), known model, not matryoshka.
+        assert!(!should_send_dimensions(
+            true, false, false, false, false, true
+        ));
+    }
+
+    #[test]
+    fn dimensions_sent_for_unknown_model_on_official_endpoint() {
+        // The bug this test guards: an unknown model on the official
+        // endpoint must still get `dimensions`, matching Python's
+        // `model not in self._model_config` early-return. The mock-server
+        // integration harness in test_embed_parity.py always sets a custom
+        // base_url, so it structurally cannot reach this branch -- only this
+        // unit test can.
+        assert!(should_send_dimensions(
+            true, false, false, false, false, false
+        ));
+    }
+
+    #[test]
+    fn dimensions_sent_for_matryoshka_model_on_official_endpoint() {
+        assert!(should_send_dimensions(
+            true, false, true, false, false, true
+        ));
+    }
+
+    #[test]
+    fn dimensions_sent_for_custom_base_url_regardless_of_model_known() {
+        assert!(should_send_dimensions(
+            true, false, false, false, true, true
+        ));
+        assert!(should_send_dimensions(
+            true, false, false, false, true, false
+        ));
+    }
+
+    #[test]
+    fn dimensions_sent_for_azure_regardless_of_model_known() {
+        assert!(should_send_dimensions(
+            true, false, false, true, false, true
+        ));
+        assert!(should_send_dimensions(
+            true, false, false, true, false, false
+        ));
+    }
+
+    #[test]
+    fn dimensions_withheld_when_output_dims_unset() {
+        assert!(!should_send_dimensions(
+            false, false, false, false, false, false
+        ));
+    }
+
+    #[test]
+    fn dimensions_withheld_for_client_side_truncation() {
+        assert!(!should_send_dimensions(true, true, true, true, true, false));
     }
 
     #[test]

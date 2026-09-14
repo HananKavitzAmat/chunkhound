@@ -100,6 +100,7 @@ pub(crate) struct PipelineConfig {
     pub embedding_base_url: Option<String>,
     pub embedding_output_dims: Option<usize>,
     pub embedding_matryoshka: bool,
+    pub embedding_model_known: bool,
     pub embedding_client_side_truncation: bool,
     pub embedding_api_version: Option<String>,
     pub embedding_ssl_verify: bool,
@@ -141,6 +142,12 @@ impl PipelineConfig {
             embedding_base_url: extract_opt(dict, "embedding_base_url")?,
             embedding_output_dims: extract_opt(dict, "embedding_output_dims")?,
             embedding_matryoshka: extract_or(dict, "embedding_matryoshka", false)?,
+            // Absent means "assume unknown" -- the same direction Python's
+            // model-lookup miss takes, and safer than assuming known: an
+            // incorrectly-withheld `dimensions` param fails a request
+            // silently (see openai.rs's dimensions gate), while sending it
+            // unnecessarily either succeeds or fails loudly.
+            embedding_model_known: extract_or(dict, "embedding_model_known", false)?,
             embedding_client_side_truncation: extract_or(
                 dict,
                 "embedding_client_side_truncation",
@@ -167,6 +174,7 @@ impl PipelineConfig {
             base_url: self.embedding_base_url.clone(),
             output_dims: self.embedding_output_dims,
             matryoshka: self.embedding_matryoshka,
+            model_known: self.embedding_model_known,
             client_side_truncation: self.embedding_client_side_truncation,
             api_version: self.embedding_api_version.clone(),
             ssl_verify: self.embedding_ssl_verify,

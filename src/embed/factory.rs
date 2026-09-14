@@ -11,6 +11,13 @@ pub(crate) struct EmbedConfig {
     pub base_url: Option<String>,
     pub output_dims: Option<usize>,
     pub matryoshka: bool,
+    /// Whether `model` is a recognized entry in the provider's static model
+    /// table (e.g. `OPENAI_MODEL_CONFIG`). Mirrors Python's
+    /// `model in self._model_config` check in
+    /// `_build_embedding_request_kwargs` — an unknown model is trusted the
+    /// same way a custom endpoint is, since its dimensions contract can't be
+    /// looked up statically.
+    pub model_known: bool,
     pub client_side_truncation: bool,
     pub api_version: Option<String>,
     pub ssl_verify: bool,
@@ -31,6 +38,7 @@ impl fmt::Debug for EmbedConfig {
             .field("base_url", &self.base_url)
             .field("output_dims", &self.output_dims)
             .field("matryoshka", &self.matryoshka)
+            .field("model_known", &self.model_known)
             .field("client_side_truncation", &self.client_side_truncation)
             .field("api_version", &self.api_version)
             .field("ssl_verify", &self.ssl_verify)

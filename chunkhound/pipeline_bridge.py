@@ -585,22 +585,30 @@ def _detect_embed_concurrency(embedding_cfg: Any) -> int:
 
 def _embedding_native_capabilities(
     embedding_cfg: Any, provider: str, model: str
-) -> tuple[int, bool]:
-    """Return the token envelope and Matryoshka flag for the native path.
+) -> tuple[int, bool, bool]:
+    """Return the token envelope, Matryoshka flag, and known-model flag.
 
     These values mirror the actual ``embed_batch`` implementations. In
     particular, OpenAI reserves 100 tokens below the model limit; the older
     ``embedding_service`` batching constants are unrelated to this callback
     path and must not be copied here.
+
+    ``model_known`` mirrors ``model in self._model_config`` in
+    ``openai_provider._build_embedding_request_kwargs`` — it feeds the Rust
+    ``dimensions`` gate (``openai.rs::should_send_dimensions``), which must
+    trust an unknown model the same way it trusts a custom endpoint. It is
+    unused outside the openai provider, where the gate doesn't exist.
     """
     if provider == "openai":
         from chunkhound.providers.embeddings.openai_provider import OPENAI_MODEL_CONFIG
 
         model_config = OPENAI_MODEL_CONFIG.get(model)
         if model_config is None:
-            return 8191 - 100, False
-        return max(1, int(model_config["max_tokens"]) - 100), bool(
-            model_config.get("matryoshka", False)
+            return 8191 - 100, False, False
+        return (
+            max(1, int(model_config["max_tokens"]) - 100),
+            bool(model_config.get("matryoshka", False)),
+            True,
         )
     if provider == "voyageai":
         from chunkhound.providers.embeddings.voyageai_provider import (
@@ -609,8 +617,8 @@ def _embedding_native_capabilities(
         )
 
         voyage_config = VOYAGE_MODEL_CONFIG.get(model, DEFAULT_UNKNOWN_MODEL_CONFIG)
-        return int(voyage_config["max_tokens_per_batch"]), False
-    return 8191, False
+        return int(voyage_config["max_tokens_per_batch"]), False, True
+    return 8191, False, True
 
 
 def _resolved_embedding_model(embedding_cfg: Any, provider: str) -> str:
@@ -717,7 +725,11 @@ async def run_rust_pipeline(
 
     embedding_provider = _cfg_or(embedding_cfg, "provider", "", str)
     embedding_model = _resolved_embedding_model(embedding_cfg, embedding_provider)
-    embed_max_tokens_per_batch, embedding_matryoshka = _embedding_native_capabilities(
+    (
+        embed_max_tokens_per_batch,
+        embedding_matryoshka,
+        embedding_model_known,
+    ) = _embedding_native_capabilities(
         embedding_cfg, embedding_provider, embedding_model
     )
     embedding_api_key = getattr(embedding_cfg, "api_key", None)
@@ -762,6 +774,7 @@ async def run_rust_pipeline(
         "embedding_base_url": embedding_base_url,
         "embedding_output_dims": getattr(embedding_cfg, "output_dims", None),
         "embedding_matryoshka": embedding_matryoshka,
+        "embedding_model_known": embedding_model_known,
         "embedding_client_side_truncation": bool(
             getattr(embedding_cfg, "client_side_truncation", False)
         ),
