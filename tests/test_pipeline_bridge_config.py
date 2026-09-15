@@ -136,6 +136,44 @@ async def test_embedding_configuration_reaches_native_pipeline(
 
 
 @pytest.mark.asyncio
+async def test_ssl_verify_stays_on_without_a_custom_base_url(
+    tmp_path: Path,
+    fake_native_pipeline: _FakeNativePipeline,
+) -> None:
+    """ssl_verify=False must not disable TLS checks on the official endpoint.
+
+    The flag is scoped to custom endpoints (see EmbeddingConfig.ssl_verify:
+    "Ignored when base_url is not set"), so a user who disabled verification
+    for a self-hosted reranker must still get verified TLS on the embedding
+    requests that carry their API key to api.openai.com.
+    """
+    from chunkhound import pipeline_bridge
+    from chunkhound.core.config.embedding_config import EmbeddingConfig
+
+    embedding = EmbeddingConfig(
+        provider="openai",
+        api_key="secret-test-key",
+        ssl_verify=False,
+        rerank_url="https://reranker.internal:8080/rerank",
+    )
+    assert embedding.base_url is None
+
+    await pipeline_bridge.run_rust_pipeline(
+        files_to_process=[],
+        db_path=tmp_path,
+        project_root=tmp_path,
+        skip_embeddings=False,
+        config=SimpleNamespace(
+            database=SimpleNamespace(),
+            indexing=SimpleNamespace(),
+            embedding=embedding,
+        ),
+    )
+
+    assert fake_native_pipeline.captured_config["embedding_ssl_verify"] is True
+
+
+@pytest.mark.asyncio
 async def test_missing_fragmentation_threshold_pct_defaults_to_30_pct(
     tmp_path: Path, fake_native_pipeline: _FakeNativePipeline
 ) -> None:
