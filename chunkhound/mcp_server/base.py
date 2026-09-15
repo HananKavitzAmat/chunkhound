@@ -1225,6 +1225,19 @@ class MCPServerBase(ABC):
             finally:
                 self._initialized = False
 
+        # Best-effort final flush, bounded so a slow/unreachable S3 endpoint
+        # can never hang server shutdown. Deliberately a plain synchronous
+        # call, not asyncio.to_thread: AnalyticsRecorder.shutdown() already
+        # bounds its own blocking time in Rust via timeout_ms, and
+        # asyncio.to_thread's own completion signaling depends on
+        # call_soon_threadsafe succeeding -- a dependency this path doesn't
+        # need and that can itself hang if the loop is already shutting down
+        # (see test_cleanup_ignores_closed_loop_race_when_close_thread_finishes,
+        # which mocks call_soon_threadsafe to fail for exactly this reason).
+        # A hard kill (SIGKILL) skips this entirely and relies on the orphan
+        # sweep on a subsequent process's startup instead.
+        ch_analytics.shutdown(self.analytics_recorder)
+
     async def ensure_tool_services(self, tool_name: str) -> DatabaseServices:
         """Return services for one tool without conflating daemon and DB lifecycles.
 

@@ -211,6 +211,21 @@ def record_internal_error(error_type: str) -> None:
         logger.opt(exception=True).debug("analytics: record_internal_error failed")
 
 
+def shutdown(recorder: Any | None, timeout_ms: int = 3000) -> None:
+    """Best-effort final flush before process exit. Bounded by `timeout_ms`
+    so a slow/unreachable S3 endpoint can never hang shutdown -- call from
+    the CLI's `finally` and the MCP server's shutdown path. A hard kill
+    (SIGKILL, crashed process) skips this entirely; the orphan sweep on a
+    subsequent run picks up the leftover buffer instead. `recorder=None` is
+    a silent no-op, matching every other call site in this module."""
+    if recorder is None:
+        return
+    try:
+        recorder.shutdown(timeout_ms)
+    except Exception:
+        logger.opt(exception=True).debug("analytics: shutdown failed")
+
+
 def _get_env(name: str) -> str | None:
     return os.environ.get(name)
 

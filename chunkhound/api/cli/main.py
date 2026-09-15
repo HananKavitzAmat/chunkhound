@@ -371,6 +371,13 @@ async def async_main() -> None:
         logger.error(f"Command failed: {e}")
         logger.exception("Full error details:")
         sys.exit(1)
+    finally:
+        # Best-effort final flush, bounded so a slow/unreachable S3 endpoint
+        # can never hang CLI exit. Runs on every path out of the try block
+        # above, including sys.exit() (finally still runs before SystemExit
+        # propagates) -- a hard kill (SIGKILL) skips this entirely and relies
+        # on the orphan sweep on a later run instead.
+        ch_analytics.shutdown(analytics_recorder)
 
 
 def main() -> None:

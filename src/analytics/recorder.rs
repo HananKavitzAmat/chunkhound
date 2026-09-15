@@ -154,16 +154,7 @@ impl AnalyticsRecorder {
         let Some(inner) = self.inner.clone() else {
             return;
         };
-        inner.shutdown.store(true, Ordering::SeqCst);
-        py.allow_threads(|| {
-            let (tx, rx) = std::sync::mpsc::channel();
-            let flush_inner = inner.clone();
-            std::thread::spawn(move || {
-                flush_inner.maybe_flush(true);
-                let _ = tx.send(());
-            });
-            let _ = rx.recv_timeout(Duration::from_millis(timeout_ms));
-        });
+        py.allow_threads(|| shutdown_blocking(inner, timeout_ms));
     }
 }
 
@@ -192,6 +183,28 @@ impl AnalyticsRecorder {
     pub(crate) fn inner_arc(&self) -> Option<Arc<Inner>> {
         self.inner.clone()
     }
+}
+
+/// Best-effort final flush bounded by `timeout_ms`. A free function over an
+/// owned `Arc<Inner>` (not a `&self` method) specifically so the flush can
+/// run on a genuinely detached `thread::spawn` thread — a scoped thread
+/// (`thread::scope`) would block this call until the flush finishes
+/// regardless of the timeout, defeating the entire point. If the timeout
+/// elapses first, the flush keeps running in the background (best-effort,
+/// not cancelled) while this call returns anyway. Marks `inner.shutdown`
+/// first so the background flush-loop thread (`spawn_flush_thread`) stops
+/// polling once this call is underway. Pure Rust, no `py`/GIL needed —
+/// `AnalyticsRecorder::shutdown` just calls this inside `py.allow_threads()`,
+/// which lets this exact timeout-bounding behavior be exercised directly by
+/// `cargo test`.
+fn shutdown_blocking(inner: Arc<Inner>, timeout_ms: u64) {
+    inner.shutdown.store(true, Ordering::SeqCst);
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        inner.maybe_flush(true);
+        let _ = tx.send(());
+    });
+    let _ = rx.recv_timeout(Duration::from_millis(timeout_ms));
 }
 
 /// Plain-Rust mirror of the Python config dict — kept separate from the
@@ -867,6 +880,57 @@ mod tests {
             seen.len(),
             500,
             "every recorded event must appear exactly once, across all flushes"
+        );
+    }
+
+    #[test]
+    fn shutdown_blocking_flushes_the_buffer() {
+        let dir = tempdir().unwrap();
+        let server = httpmock::MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(httpmock::Method::PUT);
+            then.status(200);
+        });
+        let mut raw = raw_config(dir.path());
+        raw.s3_endpoint_url = Some(server.url(""));
+        raw.s3_bucket = Some("analytics-bucket".to_string());
+        raw.s3_access_key = Some("key".to_string());
+        raw.s3_secret_key = Some("secret".to_string());
+        let inner = StdArc::new(build_inner_from_raw(raw).unwrap());
+        inner.record_event(json!({"type": "command_summary", "n": 1}));
+
+        shutdown_blocking(inner.clone(), 3000);
+
+        mock.assert();
+        assert!(inner.shutdown.load(Ordering::SeqCst));
+        assert_eq!(count_buffer_files(dir.path()), 0);
+    }
+
+    #[test]
+    fn shutdown_blocking_never_waits_past_its_timeout() {
+        let dir = tempdir().unwrap();
+        let server = httpmock::MockServer::start();
+        // Slower than the timeout below -- proves shutdown_blocking returns
+        // on schedule instead of waiting for the (best-effort, still
+        // in-flight) flush to finish.
+        let _mock = server.mock(|when, then| {
+            when.method(httpmock::Method::PUT);
+            then.status(200).delay(Duration::from_millis(300));
+        });
+        let mut raw = raw_config(dir.path());
+        raw.s3_endpoint_url = Some(server.url(""));
+        raw.s3_bucket = Some("analytics-bucket".to_string());
+        raw.s3_access_key = Some("key".to_string());
+        raw.s3_secret_key = Some("secret".to_string());
+        let inner = StdArc::new(build_inner_from_raw(raw).unwrap());
+        inner.record_event(json!({"type": "command_summary", "n": 1}));
+
+        let started = Instant::now();
+        shutdown_blocking(inner, 50);
+        assert!(
+            started.elapsed() < Duration::from_millis(250),
+            "shutdown_blocking must return at its timeout, not wait for the slow flush: took {:?}",
+            started.elapsed()
         );
     }
 }

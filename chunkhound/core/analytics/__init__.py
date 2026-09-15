@@ -16,6 +16,7 @@ from .recorder import (
     get_current,
     record_internal_error,
     record_provider_call,
+    shutdown,
     start_command,
     update_action,
 )
@@ -29,4 +30,5 @@ __all__ = [
     "record_internal_error",
     "get_current",
     "bind_current",
+    "shutdown",
 ]

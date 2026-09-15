@@ -29,8 +29,14 @@ class _Parser:
 
 
 def _read_events(buffer_dir: Path) -> list[dict]:
+    # async_main()'s finally block calls ch_analytics.shutdown(), which
+    # flushes and rotates the active buffer file to "*.pending-*" before
+    # this helper runs -- glob both patterns, not just the active-file shape.
     events = []
-    for path in glob.glob(str(buffer_dir / "buffer-*.jsonl")):
+    paths = glob.glob(str(buffer_dir / "buffer-*.jsonl")) + glob.glob(
+        str(buffer_dir / "buffer-*.pending-*")
+    )
+    for path in paths:
         for line in Path(path).read_text().splitlines():
             events.append(json.loads(line))
     return events

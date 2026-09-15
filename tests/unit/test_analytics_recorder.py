@@ -19,6 +19,7 @@ from chunkhound.core.analytics.recorder import (
     get_current,
     record_internal_error,
     record_provider_call,
+    shutdown,
     start_command,
     update_action,
 )
@@ -199,3 +200,28 @@ def test_bind_current_none_clears_any_stale_binding() -> None:
     _current.set(("stale-recorder", 999))
     bind_current(None, 0)
     assert get_current() is None
+
+
+def test_shutdown_with_no_recorder_is_a_silent_noop() -> None:
+    shutdown(None)
+
+
+def test_shutdown_flushes_the_buffer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    buffer_dir = tmp_path / "analytics"
+    monkeypatch.setattr("chunkhound.core.analytics.recorder._ANALYTICS_DIR", buffer_dir)
+    config = AnalyticsConfig(
+        enabled=True, flush_interval_seconds=999999, flush_batch_size=999999
+    )
+    recorder = build_recorder(config, tmp_path)
+    handle = start_command(recorder, "search", "cli", {})
+    end_command(recorder, handle, True)
+
+    # No S3 endpoint configured, so this is a local-only flush: the rotated
+    # file stays on disk (nothing to upload it to), but shutdown() itself
+    # must still return promptly rather than raising or hanging.
+    shutdown(recorder, timeout_ms=2000)
+
+    pending = list(buffer_dir.glob("*.pending-*"))
+    assert len(pending) == 1
