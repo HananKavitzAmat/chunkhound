@@ -163,11 +163,16 @@ class TestRequestShapeParity:
     and shared_utils.build_dimension_request_param):
 
     - ``dimensions`` is included iff output_dims is set AND NOT client_side_truncation
-      AND (matryoshka OR custom base_url OR Azure OR the model is unknown to
-      ``OPENAI_MODEL_CONFIG``). The "unknown model" branch can't be exercised
-      here since this harness always sets a custom base_url (see
-      ``dimensions_sent_for_unknown_model_on_official_endpoint`` in
-      ``src/embed/openai.rs`` for the official-endpoint case).
+      AND (matryoshka OR the endpoint is not official OR the model is unknown to
+      ``OPENAI_MODEL_CONFIG``). "Not official" is
+      ``not is_official_openai_endpoint(base_url)`` — an unset base_url *and* an
+      explicit ``https://api.openai.com/...`` both count as official, and Azure
+      (which leaves base_url unset) is therefore not a bypass either.
+      This harness always points base_url at its mock server and never sets
+      ``embedding_model_known``, so it is permanently inside the
+      "not official" *and* "unknown model" branches: the withholding branch
+      is unreachable here and is covered by the ``dimensions_*`` unit tests in
+      ``src/embed/openai.rs`` instead.
     - For standard (non-Azure) OpenAI: always ``Authorization: Bearer <key>``.
     - For VoyageAI: body always includes ``"input_type": "document"`` and
       ``"truncation": true``; dimension param name is ``"output_dimension"``.
