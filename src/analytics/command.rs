@@ -127,6 +127,23 @@ impl CommandTable {
         }
     }
 
+    /// Merges new keys into a still-open command's action fields, overwriting
+    /// on conflict. For commands whose action fields aren't fully known at
+    /// `start()` time (e.g. `index`'s `file_count`/`total_chunks`, only known
+    /// once the run completes) -- `start()` records what's known upfront,
+    /// this fills in the rest before `end()`. Unknown handle or a
+    /// non-object `action` value is silently dropped.
+    pub fn update_action(&self, handle: u64, action: serde_json::Value) {
+        let serde_json::Value::Object(new_fields) = action else {
+            return;
+        };
+        if let Some(state) = self.lock().get_mut(&handle) {
+            if let serde_json::Value::Object(existing) = &mut state.action {
+                existing.extend(new_fields);
+            }
+        }
+    }
+
     /// Finalizes and removes the command, returning its accumulated state
     /// for the caller (`AnalyticsRecorder::end_command`) to turn into a
     /// `command_summary` event. Unknown handle returns `None` silently.
@@ -216,7 +233,34 @@ mod tests {
         // None of these may panic despite handle 999 never having been started.
         table.record_provider_call(999, call("llm", "openai", "gpt", true));
         table.record_internal_error(999, "KeyError".to_string());
+        table.update_action(999, json!({"file_count": 1}));
         assert!(table.end(999).is_none());
+    }
+
+    #[test]
+    fn update_action_merges_fields_known_only_after_the_command_runs() {
+        // Mirrors the index command: `mode` is known at start_command time,
+        // `file_count`/`total_chunks` are only known once indexing finishes.
+        let table = CommandTable::default();
+        let handle = table.start(
+            "index".to_string(),
+            "cli".to_string(),
+            json!({"mode": "initial"}),
+        );
+        table.update_action(handle, json!({"file_count": 42, "total_chunks": 1337}));
+
+        let state = table.end(handle).unwrap();
+        assert_eq!(
+            state.action,
+            json!({"mode": "initial", "file_count": 42, "total_chunks": 1337})
+        );
+    }
+
+    #[test]
+    fn update_action_on_unknown_handle_is_a_silent_noop() {
+        let table = CommandTable::default();
+        table.update_action(999, json!({"file_count": 1}));
+        // No panic; nothing further to assert since there's no state to read.
     }
 
     #[test]

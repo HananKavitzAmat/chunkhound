@@ -15,11 +15,13 @@ from .recorder import (
     record_internal_error,
     record_provider_call,
     start_command,
+    update_action,
 )
 
 __all__ = [
     "build_recorder",
     "start_command",
+    "update_action",
     "end_command",
     "record_provider_call",
     "record_internal_error",

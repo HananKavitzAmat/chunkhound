@@ -108,6 +108,19 @@ def start_command(
     return handle
 
 
+def update_action(recorder: Any | None, handle: int, action: dict[str, Any]) -> None:
+    """Merge new fields into a still-open command's action, for fields only
+    known after the command runs (e.g. `index`'s `file_count`/
+    `total_chunks`, unavailable at `start_command` time). `recorder=None` is
+    a silent no-op, matching `start_command`."""
+    if recorder is None:
+        return
+    try:
+        recorder.update_action(handle, json.dumps(action, default=str))
+    except Exception:
+        logger.opt(exception=True).debug("analytics: update_action failed")
+
+
 def end_command(recorder: Any | None, handle: int, success: bool) -> None:
     """Finalize a command and clear it as "current" for this Task.
     `recorder=None` is a silent no-op, matching `start_command`."""

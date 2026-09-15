@@ -125,6 +125,17 @@ impl AnalyticsRecorder {
         inner.commands.record_internal_error(handle, error_type);
     }
 
+    /// Merges `action` (a JSON-serialized object) into a still-open
+    /// command's action fields -- for fields only known after the command
+    /// runs (e.g. `index`'s `file_count`/`total_chunks`). See
+    /// `CommandTable::update_action`.
+    fn update_action(&self, handle: u64, action: String) {
+        let Some(inner) = &self.inner else { return };
+        if let Ok(value) = serde_json::from_str(&action) {
+            inner.commands.update_action(handle, value);
+        }
+    }
+
     fn end_command(&self, handle: u64, success: bool) {
         let Some(inner) = &self.inner else { return };
         let Some(state) = inner.commands.end(handle) else {
