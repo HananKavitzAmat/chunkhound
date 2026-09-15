@@ -10,23 +10,27 @@ const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 
 /// Mirrors Python's `dimensions` gate in
 /// `openai_provider._build_embedding_request_kwargs`: the param is withheld
-/// only when the endpoint is trusted as official (no custom `base_url`, not
-/// Azure) AND the model is a *known*, non-matryoshka entry in
-/// `OPENAI_MODEL_CONFIG`. A custom endpoint, a matryoshka model, or an
-/// unrecognized model are all trusted to accept (or reject) the parameter
-/// live rather than have it withheld based on a static table lookup that
-/// can't speak for them.
+/// only when the endpoint is trusted as official (no custom `base_url`) AND
+/// the model is a *known*, non-matryoshka entry in `OPENAI_MODEL_CONFIG`. A
+/// custom endpoint, a matryoshka model, or an unrecognized model are all
+/// trusted to accept (or reject) the parameter live rather than have it
+/// withheld based on a static table lookup that can't speak for them.
+///
+/// Azure is deliberately *not* a bypass. Python derives endpoint trust from
+/// `is_official_openai_endpoint(self._base_url)`, and Azure configs leave
+/// `base_url` unset (`factory.rs` rejects `is_azure` together with a
+/// `base_url`), so `None` reads as official and the withholding rule applies
+/// to Azure exactly as it does to api.openai.com.
 fn should_send_dimensions(
     output_dims_set: bool,
     client_side_truncation: bool,
     matryoshka: bool,
-    is_azure: bool,
     has_custom_base_url: bool,
     model_known: bool,
 ) -> bool {
     output_dims_set
         && !client_side_truncation
-        && (matryoshka || is_azure || has_custom_base_url || !model_known)
+        && (matryoshka || has_custom_base_url || !model_known)
 }
 
 #[derive(Deserialize)]
@@ -109,7 +113,6 @@ impl OpenAiProvider {
             self.config.output_dims.is_some(),
             self.config.client_side_truncation,
             self.config.matryoshka,
-            self.config.is_azure,
             self.config.base_url.is_some(),
             self.config.model_known,
         );
@@ -276,10 +279,8 @@ mod tests {
     #[test]
     fn dimensions_withheld_for_known_model_on_official_endpoint() {
         // The only case where dimensions must be withheld: official endpoint
-        // (no custom base_url, not Azure), known model, not matryoshka.
-        assert!(!should_send_dimensions(
-            true, false, false, false, false, true
-        ));
+        // (no custom base_url), known model, not matryoshka.
+        assert!(!should_send_dimensions(true, false, false, false, true));
     }
 
     #[test]
@@ -290,48 +291,46 @@ mod tests {
         // integration harness in test_embed_parity.py always sets a custom
         // base_url, so it structurally cannot reach this branch -- only this
         // unit test can.
-        assert!(should_send_dimensions(
-            true, false, false, false, false, false
-        ));
+        assert!(should_send_dimensions(true, false, false, false, false));
     }
 
     #[test]
     fn dimensions_sent_for_matryoshka_model_on_official_endpoint() {
-        assert!(should_send_dimensions(
-            true, false, true, false, false, true
-        ));
+        assert!(should_send_dimensions(true, false, true, false, true));
     }
 
     #[test]
     fn dimensions_sent_for_custom_base_url_regardless_of_model_known() {
-        assert!(should_send_dimensions(
-            true, false, false, false, true, true
-        ));
-        assert!(should_send_dimensions(
-            true, false, false, false, true, false
-        ));
+        assert!(should_send_dimensions(true, false, false, true, true));
+        assert!(should_send_dimensions(true, false, false, true, false));
     }
 
     #[test]
-    fn dimensions_sent_for_azure_regardless_of_model_known() {
-        assert!(should_send_dimensions(
-            true, false, false, true, false, true
-        ));
-        assert!(should_send_dimensions(
-            true, false, false, true, false, false
-        ));
+    fn dimensions_gate_treats_azure_as_an_official_endpoint() {
+        // Azure leaves `base_url` unset, so Python's
+        // `is_official_openai_endpoint(None)` is True and
+        // `_trust_runtime_output_dims()` is False -- the known-model
+        // withholding rule applies to Azure exactly as it does to
+        // api.openai.com. Azure therefore appears only as
+        // `has_custom_base_url = false` here; it is not a gate input.
+        //
+        // Sending `dimensions` for a known non-matryoshka model (e.g.
+        // text-embedding-ada-002) is a live 400 from Azure, and the
+        // test_embed_parity.py harness cannot reach this branch because it
+        // always points `embedding_base_url` at its mock server.
+        assert!(!should_send_dimensions(true, false, false, false, true));
+        // An unknown model is still trusted at runtime, on Azure as elsewhere.
+        assert!(should_send_dimensions(true, false, false, false, false));
     }
 
     #[test]
     fn dimensions_withheld_when_output_dims_unset() {
-        assert!(!should_send_dimensions(
-            false, false, false, false, false, false
-        ));
+        assert!(!should_send_dimensions(false, false, false, false, false));
     }
 
     #[test]
     fn dimensions_withheld_for_client_side_truncation() {
-        assert!(!should_send_dimensions(true, true, true, true, true, false));
+        assert!(!should_send_dimensions(true, true, true, true, false));
     }
 
     #[test]
