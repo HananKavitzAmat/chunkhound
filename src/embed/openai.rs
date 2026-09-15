@@ -1,4 +1,4 @@
-use super::common::{sanitize, HttpClientPool};
+use super::common::{is_context_length_error, sanitize, HttpClientPool};
 use super::factory::EmbedConfig;
 use super::{EmbedBatchFn, EmbedBatchResult};
 use crate::error::PipelineError;
@@ -191,14 +191,7 @@ fn parse_response(
         let message = sanitize(body, secret);
         let message_lower = message.to_lowercase();
         return Err(match status.as_u16() {
-            400 if message_lower.contains("context")
-                || (message_lower.contains("token") && message_lower.contains("limit"))
-                || (message_lower.contains("token")
-                    && message_lower.contains("max")
-                    && message_lower.contains("per request")) =>
-            {
-                PipelineError::ContextLengthExceeded
-            }
+            400 if is_context_length_error(&message_lower) => PipelineError::ContextLengthExceeded,
             400 => PipelineError::BadRequest(message),
             401 | 403 => PipelineError::Auth,
             408 => PipelineError::ProviderError("HTTP 408 request timeout".to_string()),
