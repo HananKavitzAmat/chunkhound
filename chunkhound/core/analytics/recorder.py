@@ -41,13 +41,17 @@ _current: "contextvars.ContextVar[tuple[Any, int] | None]" = contextvars.Context
 )
 
 
-def build_recorder(config: AnalyticsConfig, target_dir: Path) -> Any:
+def build_recorder(config: AnalyticsConfig | None, target_dir: Path) -> Any:
     """Construct the process's AnalyticsRecorder from validated config.
 
     Always returns a usable recorder object, even on failure -- a disabled
     recorder (every method a no-op) is the safe fallback so a bad analytics
-    config can never prevent the host command from starting.
+    config can never prevent the host command from starting. `config=None`
+    (e.g. a caller/test double whose Config-like object has no `analytics`
+    attribute at all) is treated the same as a disabled config.
     """
+    if config is None:
+        return chunkhound_native.AnalyticsRecorder({"enabled": False})
     config_dict = {
         "enabled": config.enabled,
         "privacy_mode": config.privacy_mode,
@@ -77,14 +81,20 @@ def build_recorder(config: AnalyticsConfig, target_dir: Path) -> Any:
 
 
 def start_command(
-    recorder: Any, command: str, source: str, action: dict[str, Any]
+    recorder: Any | None, command: str, source: str, action: dict[str, Any]
 ) -> int:
     """Open a command, set it as "current" for this Task, and return its handle.
+
+    `recorder=None` (no recorder was wired for this call site) is a silent
+    no-op returning handle 0 -- callers never need to guard this call with
+    an `if recorder is not None`.
 
     Callers (MCP/CLI hooks) should still hold the returned handle explicitly
     and pass it to `end_command` -- the ContextVar is only a convenience for
     deeper call sites, not a replacement for that.
     """
+    if recorder is None:
+        return 0
     try:
         handle = int(
             recorder.start_command(command, source, json.dumps(action, default=str))
@@ -98,8 +108,11 @@ def start_command(
     return handle
 
 
-def end_command(recorder: Any, handle: int, success: bool) -> None:
-    """Finalize a command and clear it as "current" for this Task."""
+def end_command(recorder: Any | None, handle: int, success: bool) -> None:
+    """Finalize a command and clear it as "current" for this Task.
+    `recorder=None` is a silent no-op, matching `start_command`."""
+    if recorder is None:
+        return
     try:
         recorder.end_command(handle, success)
     except Exception:

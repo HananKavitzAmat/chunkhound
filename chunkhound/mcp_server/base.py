@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from loguru import logger
 
+from chunkhound.core import analytics as ch_analytics
 from chunkhound.core.config import EmbeddingProviderFactory
 from chunkhound.core.config.config import Config
 from chunkhound.core.exceptions.core import ConfigurationError
@@ -103,6 +104,15 @@ class MCPServerBase(ABC):
         self.embedding_manager: EmbeddingManager | None = None
         self.llm_manager: LLMManager | None = None
         self.realtime_indexing: RealtimeIndexingService | None = None
+
+        # Constructed once for this server process's lifetime (opt-in via
+        # config.analytics.enabled; always a safe, usable object -- see
+        # build_recorder()'s docstring). Every tool call shares this one
+        # recorder/buffer, matching the design's per-process buffer model.
+        self.analytics_recorder = ch_analytics.build_recorder(
+            getattr(config, "analytics", None),
+            getattr(config, "target_dir", None) or Path.cwd(),
+        )
 
         # Underlying MCP protocol server. Constructed lazily in
         # _register_common_tool_handlers() by subclasses that actually
@@ -1387,6 +1397,7 @@ class MCPServerBase(ABC):
                 llm_manager=self.llm_manager,
                 config=self.config,
                 ensure_services=self.ensure_tool_services,
+                analytics_recorder=self.analytics_recorder,
             )
             error_content = first_error_tool_content(text_contents)
             if error_content is not None:

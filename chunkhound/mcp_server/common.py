@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING, Any, TypeVar
 if TYPE_CHECKING:  # type-checkers only; avoid runtime hard dep
     import mcp.types as types  # noqa: F401
 
+from chunkhound.core import analytics as ch_analytics
+
 from .tools import TOOL_REGISTRY, execute_tool
 
 if TYPE_CHECKING:
@@ -167,6 +169,26 @@ def validate_search_parameters(
     return validated_page_size, validated_offset, validated_tokens
 
 
+# Per-command action fields for analytics (see the ChunkHound Per-User
+# Analytics design doc) -- a small, meaningful subset of arguments per tool,
+# not a generic dump of everything. Tools absent here (e.g. daemon_status)
+# get an empty action payload.
+_ANALYTICS_ACTION_FIELDS: dict[str, tuple[str, ...]] = {
+    "search": ("query", "commit_range", "commit_hash", "last_n_commits"),
+    "code_research": ("question",),
+    "research": ("question",),
+    "websearch": ("query",),
+    "fetchurl": ("url",),
+}
+
+
+def _analytics_action_fields(
+    tool_name: str, arguments: dict[str, Any]
+) -> dict[str, Any]:
+    fields = _ANALYTICS_ACTION_FIELDS.get(tool_name, ())
+    return {k: arguments[k] for k in fields if arguments.get(k) is not None}
+
+
 async def handle_tool_call(
     tool_name: str,
     arguments: dict[str, Any],
@@ -178,6 +200,7 @@ async def handle_tool_call(
     llm_manager: LLMManager | None = None,
     config: Any = None,
     ensure_services: Callable[[str], Awaitable[DatabaseServices]] | None = None,
+    analytics_recorder: Any = None,
 ) -> list[types.TextContent]:
     """Unified tool call handler for all MCP servers.
 
@@ -195,6 +218,8 @@ async def handle_tool_call(
         llm_manager: Optional LLM manager for code_research
         config: Optional Config instance for research service factory
         ensure_services: Optional lazy DB-service resolver for DB-backed tools
+        analytics_recorder: Optional chunkhound_native.AnalyticsRecorder;
+            None is a silent no-op (no analytics wired for this call site)
 
     Returns:
         List containing a single TextContent with JSON-formatted response
@@ -202,6 +227,12 @@ async def handle_tool_call(
     Raises:
         MCPError: On tool execution failure (caught and formatted as error response)
     """
+    handle = ch_analytics.start_command(
+        analytics_recorder,
+        tool_name,
+        "mcp",
+        _analytics_action_fields(tool_name, arguments),
+    )
     try:
         # Lazy import at runtime to construct MCP content objects without
         # forcing hard dependency during module import/collection.
@@ -257,10 +288,13 @@ async def handle_tool_call(
         else:
             # Dict response - format as JSON for MCP protocol
             response_text = format_tool_response(result, format_type="json")
+        ch_analytics.end_command(analytics_recorder, handle, True)
         return [types.TextContent(type="text", text=response_text)]
 
     except Exception as e:
+        ch_analytics.record_internal_error(type(e).__name__)
         error_response = format_error_response(e, include_traceback=debug_mode)
+        ch_analytics.end_command(analytics_recorder, handle, False)
         return [types.TextContent(type="text", text=json.dumps(error_response))]
 
 
