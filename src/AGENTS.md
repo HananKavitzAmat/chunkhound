@@ -39,7 +39,7 @@ does not currently exist anywhere in the pipeline.
 |---|---|
 | `lib.rs` | `#[pymodule]` entry point; `scan_files()` — parallel file discovery via the `ignore` crate |
 | `error.rs` | `DbError`/`ScanError` → `PyErr` conversions |
-| `embed/{mod,callback,factory,openai,voyageai,retry,token}.rs` | Embedding trait, Python fallback, native providers, retries, and token-aware batching |
+| `embed/{mod,callback,common,factory,openai,voyageai,retry,token}.rs` | Embedding trait, Python fallback, native providers, retries, and token-aware batching. `common.rs` holds the shared client-pool/validate/retry/sanitize scaffolding both native providers delegate to |
 | `types.rs` | DB-facing serde structs shared across the PyO3 boundary |
 | `db/mod.rs` | `DbBackend` trait, `DbConfig`, `create_backend()` |
 | `db/duckdb_backend/mod.rs` | `DuckDbHnswBackend` struct, open/close lifecycle |
@@ -55,6 +55,7 @@ does not currently exist anywhere in the pipeline.
 | `pipeline/types.rs` | Internal `ParsedFile`/`NewChunk` — never exposed to Python |
 | `pipeline/report.rs` | `PipelineReport` `#[pyclass]` returned to Python |
 | `pipeline/parse_call_config.rs` | `ParseCallConfig` `#[pyclass]` passed into the Python parse callback |
+| `analytics/{mod,recorder,command,identity,repository,s3}.rs` | Per-user usage analytics: `AnalyticsRecorder` `#[pyclass]` (local JSONL buffer, background flush thread, SigV4 S3 upload); `command.rs`'s handle-based table (no contextvars — callers pass an explicit `u64` handle) is what lets both ordinary Python call sites and the native embed adapters record into the same rollup without a cross-thread propagation problem |
 
 ## 3. PyO3 boundary design decisions
 

@@ -21,6 +21,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .analytics_config import AnalyticsConfig
 from .database_config import DatabaseConfig
 from .embedding_config import EmbeddingConfig
 from .fetchurl_config import FetchUrlConfig
@@ -52,6 +53,7 @@ class Config(BaseModel):
     indexing: IndexingConfig = Field(default_factory=IndexingConfig)
     research: ResearchConfig = Field(default_factory=ResearchConfig)
     fetchurl: FetchUrlConfig = Field(default_factory=FetchUrlConfig)
+    analytics: AnalyticsConfig = Field(default_factory=AnalyticsConfig)
     debug: bool = Field(default=False)
 
     # Private field to store the target directory from CLI args
@@ -299,6 +301,8 @@ class Config(BaseModel):
             config["research"] = research_config
         if fetchurl_config := FetchUrlConfig.load_from_env():
             config["fetchurl"] = fetchurl_config
+        if analytics_config := AnalyticsConfig.load_from_env():
+            config["analytics"] = analytics_config
 
         return config
 
