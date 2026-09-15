@@ -13,8 +13,10 @@ import pytest
 
 from chunkhound.core.analytics.recorder import (
     _current,
+    bind_current,
     build_recorder,
     end_command,
+    get_current,
     record_internal_error,
     record_provider_call,
     start_command,
@@ -153,3 +155,47 @@ def test_update_action_merges_fields_known_only_after_the_command_runs(
 
 def test_update_action_without_an_open_command_is_a_silent_noop() -> None:
     update_action({"file_count": 1})
+
+
+def test_get_current_returns_none_when_nothing_is_open() -> None:
+    assert get_current() is None
+
+
+def test_get_current_matches_what_start_command_set(tmp_path: Path) -> None:
+    recorder = build_recorder(AnalyticsConfig(enabled=False), tmp_path)
+    handle = start_command(recorder, "search", "cli", {})
+    assert get_current() == (recorder, handle)
+
+
+def test_bind_current_makes_the_binding_visible_to_record_provider_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Simulates the cross-thread case: the CLI thread resolves
+    get_current(), a *different* thread (standing in for a rayon worker)
+    calls bind_current() with that value before its own provider call."""
+    monkeypatch.setattr(
+        "chunkhound.core.analytics.recorder._ANALYTICS_DIR", tmp_path / "analytics"
+    )
+    recorder = build_recorder(AnalyticsConfig(enabled=True), tmp_path)
+    handle = start_command(recorder, "index", "cli", {})
+    resolved = get_current()
+    assert resolved is not None
+
+    # Simulate landing on a fresh thread/context with nothing bound.
+    token = _current.set(None)
+    try:
+        assert get_current() is None
+        bind_current(*resolved)
+        record_provider_call("embedding", "openai", "text-embedding-3", True)
+    finally:
+        _current.reset(token)
+
+    end_command(recorder, handle, True)
+    events = _read_buffer_events(tmp_path / "analytics")
+    assert events[0]["providers"]["embedding"][0]["calls"] == 1
+
+
+def test_bind_current_none_clears_any_stale_binding() -> None:
+    _current.set(("stale-recorder", 999))
+    bind_current(None, 0)
+    assert get_current() is None

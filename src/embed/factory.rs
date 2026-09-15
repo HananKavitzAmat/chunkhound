@@ -1,7 +1,9 @@
 use super::{EmbedBatchFn, PythonEmbedCallback};
+use crate::analytics::Inner as AnalyticsInner;
 use crate::error::PipelineError;
 use pyo3::prelude::*;
 use std::fmt;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub(crate) struct EmbedConfig {
@@ -26,6 +28,16 @@ pub(crate) struct EmbedConfig {
     pub azure_deployment: Option<String>,
     pub max_tokens_per_batch: usize,
     pub max_items_per_batch: usize,
+    /// The open command's analytics recorder + handle, extracted once
+    /// (under the GIL) at `IndexingPipeline::run()` time and threaded down
+    /// here so the native providers can call `record_provider_call`
+    /// directly — no PyO3/GIL round-trip per attempt, and no reliance on
+    /// Python `contextvars` (which can't reach the rayon thread pool this
+    /// runs on anyway). `None` when analytics is disabled or this is the
+    /// Python-callback fallback path (that path's own analytics binding
+    /// lives in `pipeline_bridge.py`, via `functools.partial`, since it's
+    /// Python code being called from a rayon thread, not Rust).
+    pub analytics: Option<(Arc<AnalyticsInner>, u64)>,
 }
 
 impl fmt::Debug for EmbedConfig {
@@ -47,6 +59,7 @@ impl fmt::Debug for EmbedConfig {
             .field("azure_deployment", &self.azure_deployment)
             .field("max_tokens_per_batch", &self.max_tokens_per_batch)
             .field("max_items_per_batch", &self.max_items_per_batch)
+            .field("analytics", &self.analytics.is_some())
             .finish()
     }
 }

@@ -14,4 +14,9 @@ mod recorder;
 mod repository;
 mod s3;
 
+pub(crate) use command::ProviderCall;
 pub use recorder::AnalyticsRecorder;
+pub(crate) use recorder::Inner;
+
+#[cfg(test)]
+pub(crate) use recorder::test_inner;

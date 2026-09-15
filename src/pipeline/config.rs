@@ -183,6 +183,9 @@ impl PipelineConfig {
             azure_deployment: self.embedding_azure_deployment.clone(),
             max_tokens_per_batch: self.embed_max_tokens_per_batch,
             max_items_per_batch: self.embed_batch_size.max(1),
+            // Set by IndexingPipeline::run() after this call, once the
+            // analytics recorder (if any) has been extracted under the GIL.
+            analytics: None,
         }
     }
 }

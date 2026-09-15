@@ -180,6 +180,18 @@ impl AnalyticsRecorder {
         });
         *self.flush_thread.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle);
     }
+
+    /// Extracts a clone of the shared inner state for Rust-internal callers
+    /// that already hold a reference to this recorder from Python (e.g.
+    /// `IndexingPipeline::run()`, which receives `Py<AnalyticsRecorder>`).
+    /// Once extracted, `Inner::record_provider_call` can be called directly
+    /// from deep inside the native embedding pipeline — including from
+    /// rayon worker threads — with zero further PyO3/GIL round-trips per
+    /// attempt. `None` when analytics is disabled, matching every other
+    /// method's silent-no-op behavior.
+    pub(crate) fn inner_arc(&self) -> Option<Arc<Inner>> {
+        self.inner.clone()
+    }
 }
 
 /// Plain-Rust mirror of the Python config dict — kept separate from the
@@ -398,6 +410,28 @@ fn iso8601_now() -> String {
 }
 
 impl Inner {
+    /// Rust-internal equivalent of `AnalyticsRecorder::record_provider_call`
+    /// — for callers that already hold an `Arc<Inner>` (via `inner_arc()`)
+    /// rather than a `Py<AnalyticsRecorder>`, so no GIL is needed per call.
+    /// Unknown handle is a silent no-op, matching every other call site.
+    pub(crate) fn record_provider_call(&self, handle: u64, call: super::command::ProviderCall<'_>) {
+        self.commands.record_provider_call(handle, call);
+    }
+
+    /// Test-only: lets `embed::openai`/`embed::voyageai`'s own tests open a
+    /// command and inspect its accumulated `providers` rollup directly,
+    /// without going through the PyO3 boundary at all.
+    #[cfg(test)]
+    pub(crate) fn test_start_command(&self) -> u64 {
+        self.commands
+            .start("test".to_string(), "test".to_string(), json!({}))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_end_command(&self, handle: u64) -> Option<super::command::CommandState> {
+        self.commands.end(handle)
+    }
+
     fn record_event(&self, event: serde_json::Value) {
         let line = match serde_json::to_string(&event) {
             Ok(s) => s,
@@ -576,6 +610,20 @@ fn rotated_path_for(active_path: &Path) -> PathBuf {
     let mut rotated = active_path.as_os_str().to_owned();
     rotated.push(format!(".pending-{suffix_hex}"));
     PathBuf::from(rotated)
+}
+
+/// Test-only helper for other modules (e.g. `embed::openai`, `embed::voyageai`)
+/// that need a real, enabled `Inner` to exercise their own analytics wiring
+/// without going through the PyO3 boundary at all.
+#[cfg(test)]
+pub(crate) fn test_inner(dir: &Path) -> Arc<Inner> {
+    let raw = RawConfig {
+        buffer_dir: dir.to_path_buf(),
+        salt_path: dir.join("salt"),
+        repository_dir: dir.to_path_buf(),
+        ..RawConfig::default()
+    };
+    Arc::new(build_inner_from_raw(raw).expect("enabled RawConfig always builds an Inner"))
 }
 
 #[cfg(test)]

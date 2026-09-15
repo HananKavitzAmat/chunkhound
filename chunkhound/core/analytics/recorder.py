@@ -41,6 +41,33 @@ _current: "contextvars.ContextVar[tuple[Any, int] | None]" = contextvars.Context
 )
 
 
+def get_current() -> tuple[Any, int] | None:
+    """Read the (recorder, handle) currently open in this Task, or None.
+
+    For callers that need to explicitly carry the binding across a
+    boundary the ContextVar can't cross on its own -- e.g. resolving it on
+    the CLI's own thread/task before handing off to a Rust rayon thread
+    pool via `functools.partial` (see pipeline_bridge.py). Ordinary call
+    sites should use `record_provider_call`/`record_internal_error`
+    instead of reading this directly.
+    """
+    return _current.get()
+
+
+def bind_current(recorder: Any | None, handle: int) -> None:
+    """Explicitly set (recorder, handle) as "current" on this OS thread.
+
+    For callers that can't rely on ContextVar auto-propagation -- a Rust
+    rayon worker thread invoking a Python embed callback gets a fresh,
+    empty context (contextvars don't cross OS thread boundaries the way
+    they cross asyncio Task boundaries). Call this once, on that thread,
+    immediately before the instrumented provider call it's meant to cover.
+    `recorder=None` clears any stale binding rather than setting a
+    (None, handle) pair that would itself need a None-check everywhere.
+    """
+    _current.set((recorder, handle) if recorder is not None else None)
+
+
 def build_recorder(config: AnalyticsConfig | None, target_dir: Path) -> Any:
     """Construct the process's AnalyticsRecorder from validated config.
 

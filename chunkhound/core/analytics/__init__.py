@@ -10,8 +10,10 @@ MCP/CLI hook that opened the command).
 """
 
 from .recorder import (
+    bind_current,
     build_recorder,
     end_command,
+    get_current,
     record_internal_error,
     record_provider_call,
     start_command,
@@ -25,4 +27,6 @@ __all__ = [
     "end_command",
     "record_provider_call",
     "record_internal_error",
+    "get_current",
+    "bind_current",
 ]

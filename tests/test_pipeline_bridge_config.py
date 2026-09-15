@@ -508,6 +508,8 @@ async def test_run_rust_pipeline_closes_its_own_embed_resources_after_run(
         embed_batch_callback: object,
         progress_callback: object,
         incremental: object,
+        analytics_recorder: object = None,
+        analytics_handle: object = 0,
     ) -> SimpleNamespace:
         assert embed_batch_callback is not None
         captured_caches.append(embed_batch_callback.keywords["cache"])

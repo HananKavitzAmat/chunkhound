@@ -11,12 +11,19 @@ const DEFAULT_BASE_URL: &str = "https://api.voyageai.com/v1";
 #[derive(Deserialize)]
 struct VoyageResponse {
     data: Vec<VoyageEmbedding>,
+    #[serde(default)]
+    usage: Option<VoyageUsage>,
 }
 
 #[derive(Deserialize)]
 struct VoyageEmbedding {
     index: usize,
     embedding: Vec<f64>,
+}
+
+#[derive(Deserialize)]
+struct VoyageUsage {
+    total_tokens: u64,
 }
 
 pub(crate) struct VoyageAiProvider {
@@ -44,7 +51,43 @@ impl VoyageAiProvider {
         })
     }
 
+    /// One vendor call attempt. Records exactly one analytics
+    /// `record_provider_call` here — this is called once per
+    /// `request_with_retry`'s retry-loop iteration, matching the design's
+    /// "calls = every attempt including retries" semantics, with zero
+    /// further threading needed in `request_with_retry`/`run_embed_batch`.
     fn request_once(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, PipelineError> {
+        let result = self.request_once_inner(texts);
+        if let Some((analytics, handle)) = &self.config.analytics {
+            let call = match &result {
+                Ok((_, input_tokens)) => crate::analytics::ProviderCall {
+                    kind: "embedding",
+                    provider: &self.config.provider,
+                    model: &self.config.model,
+                    success: true,
+                    error_type: None,
+                    input_tokens: *input_tokens,
+                    output_tokens: None,
+                },
+                Err(e) => crate::analytics::ProviderCall {
+                    kind: "embedding",
+                    provider: &self.config.provider,
+                    model: &self.config.model,
+                    success: false,
+                    error_type: Some(e.analytics_error_type()),
+                    input_tokens: None,
+                    output_tokens: None,
+                },
+            };
+            analytics.record_provider_call(*handle, call);
+        }
+        result.map(|(vectors, _)| vectors)
+    }
+
+    fn request_once_inner(
+        &self,
+        texts: &[String],
+    ) -> Result<(Vec<Vec<f32>>, Option<u64>), PipelineError> {
         let url = format!(
             "{}/embeddings",
             self.config
@@ -91,7 +134,7 @@ fn parse_response(
     response: Response,
     expected: usize,
     secret: Option<&str>,
-) -> Result<Vec<Vec<f32>>, PipelineError> {
+) -> Result<(Vec<Vec<f32>>, Option<u64>), PipelineError> {
     let status = response.status();
     if !status.is_success() {
         let retry_after = response
@@ -133,7 +176,8 @@ fn parse_response(
         }
         vectors[item.index] = Some(item.embedding);
     }
-    vectors
+    let input_tokens = payload.usage.map(|u| u.total_tokens);
+    let vectors: Result<Vec<Vec<f32>>, PipelineError> = vectors
         .into_iter()
         .map(|v| {
             let v = v.ok_or_else(|| {
@@ -146,7 +190,8 @@ fn parse_response(
             }
             Ok(v.into_iter().map(|x| x as f32).collect())
         })
-        .collect()
+        .collect();
+    Ok((vectors?, input_tokens))
 }
 
 #[cfg(test)]
@@ -171,6 +216,7 @@ mod tests {
             azure_deployment: None,
             max_tokens_per_batch: 8191,
             max_items_per_batch: 100,
+            analytics: None,
         }
     }
 
@@ -237,5 +283,74 @@ mod tests {
 
         first_mock.assert();
         second_mock.assert();
+    }
+
+    #[test]
+    fn embed_batch_records_a_successful_provider_call_with_token_usage() {
+        let dir = tempfile::tempdir().unwrap();
+        let inner = crate::analytics::test_inner(dir.path());
+        let handle = inner.test_start_command();
+
+        let server = httpmock::MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(httpmock::Method::POST).path("/embeddings");
+            then.status(200).json_body(serde_json::json!({
+                "data": [{"index": 0, "embedding": [0.1, 0.2]}],
+                "usage": {"total_tokens": 17}
+            }));
+        });
+        let mut cfg = config(server.url(""));
+        cfg.analytics = Some((inner.clone(), handle));
+        let provider = VoyageAiProvider::new(cfg).expect("provider");
+
+        provider
+            .embed_batch(&["hello".to_string()])
+            .expect("response");
+        mock.assert();
+
+        let state = inner.test_end_command(handle).unwrap();
+        let stats = state
+            .providers
+            .get(&(
+                "embedding".to_string(),
+                "voyageai".to_string(),
+                "voyage-3".to_string(),
+            ))
+            .unwrap();
+        assert_eq!(stats.calls, 1);
+        assert_eq!(stats.fails, 0);
+        assert_eq!(stats.input_tokens, 17);
+    }
+
+    #[test]
+    fn embed_batch_records_a_failed_provider_call_with_error_type() {
+        let dir = tempfile::tempdir().unwrap();
+        let inner = crate::analytics::test_inner(dir.path());
+        let handle = inner.test_start_command();
+
+        let server = httpmock::MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(httpmock::Method::POST).path("/embeddings");
+            then.status(401);
+        });
+        let mut cfg = config(server.url(""));
+        cfg.analytics = Some((inner.clone(), handle));
+        let provider = VoyageAiProvider::new(cfg).expect("provider");
+
+        let _ = provider.embed_batch(&["hello".to_string()]);
+        mock.assert();
+
+        let state = inner.test_end_command(handle).unwrap();
+        let stats = state
+            .providers
+            .get(&(
+                "embedding".to_string(),
+                "voyageai".to_string(),
+                "voyage-3".to_string(),
+            ))
+            .unwrap();
+        assert_eq!(stats.calls, 1);
+        assert_eq!(stats.fails, 1);
+        assert_eq!(stats.error_types.get("Auth"), Some(&1));
     }
 }

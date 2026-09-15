@@ -110,7 +110,8 @@ impl IndexingPipeline {
     /// ``"write-index"``/``"write-compact"`` fires per run — compaction
     /// rebuilds indexes as part of its own rewrite, so the two never both
     /// run.
-    #[pyo3(signature = (files, parse_batch_callback, embed_batch_callback=None, progress_callback=None, incremental=false))]
+    #[pyo3(signature = (files, parse_batch_callback, embed_batch_callback=None, progress_callback=None, incremental=false, analytics_recorder=None, analytics_handle=0))]
+    #[allow(clippy::too_many_arguments)] // Mirrors run()'s existing shape; analytics is two more optional, orthogonal params.
     fn run(
         &mut self,
         py: Python<'_>,
@@ -126,8 +127,18 @@ impl IndexingPipeline {
         embed_batch_callback: Option<Py<PyAny>>,
         progress_callback: Option<Py<PyAny>>,
         incremental: bool,
+        analytics_recorder: Option<Py<crate::analytics::AnalyticsRecorder>>,
+        analytics_handle: u64,
     ) -> PyResult<PipelineReport> {
         let started = Instant::now();
+        // Extracted once here, while the GIL is still held (this whole
+        // method releases it via py.allow_threads() below) -- the resulting
+        // Arc is Send+Sync and needs no further GIL access to record calls
+        // from the embed rayon threads.
+        let analytics: Option<(Arc<crate::analytics::Inner>, u64)> = analytics_recorder
+            .as_ref()
+            .and_then(|r| r.borrow(py).inner_arc())
+            .map(|inner| (inner, analytics_handle));
 
         if files.is_empty() {
             // Only short-circuit when there's no DB yet to clean up (first-ever
@@ -266,8 +277,10 @@ impl IndexingPipeline {
             None
         } else {
             let callback = embed_batch_callback.as_ref().map(|cb| cb.clone_ref(py));
+            let mut embed_cfg = self.config.embed_config();
+            embed_cfg.analytics = analytics.clone();
             Some(Arc::from(
-                create_embed_fn(&self.config.embed_config(), callback)
+                create_embed_fn(&embed_cfg, callback)
                     .map_err(pyo3::exceptions::PyRuntimeError::new_err)?,
             ))
         };
