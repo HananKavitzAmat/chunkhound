@@ -23,6 +23,7 @@ from typing import Any
 import httpx
 from loguru import logger
 
+from chunkhound.core import analytics as ch_analytics
 from chunkhound.core.config.claude_model_resolution import (
     CLAUDE_HAIKU_SENTINEL,
     resolve_claude_model,
@@ -671,12 +672,27 @@ class AnthropicLLMProvider(LLMProvider):
             API response
         """
         beta_headers = request_kwargs.pop("betas", None)
-        if beta_headers:
-            return await self._client.beta.messages.create(
-                betas=beta_headers, **request_kwargs
+        try:
+            if beta_headers:
+                response = await self._client.beta.messages.create(
+                    betas=beta_headers, **request_kwargs
+                )
+            else:
+                response = await self._client.messages.create(**request_kwargs)
+        except Exception as exc:
+            ch_analytics.record_provider_call(
+                "llm", self.name, self._model, False, error_type=type(exc).__name__
             )
-        else:
-            return await self._client.messages.create(**request_kwargs)
+            raise
+        ch_analytics.record_provider_call(
+            "llm",
+            self.name,
+            self._model,
+            True,
+            input_tokens=response.usage.input_tokens if response.usage else None,
+            output_tokens=response.usage.output_tokens if response.usage else None,
+        )
+        return response
 
     async def complete(
         self,
