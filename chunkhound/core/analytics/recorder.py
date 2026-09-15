@@ -108,13 +108,18 @@ def start_command(
     return handle
 
 
-def update_action(recorder: Any | None, handle: int, action: dict[str, Any]) -> None:
-    """Merge new fields into a still-open command's action, for fields only
-    known after the command runs (e.g. `index`'s `file_count`/
-    `total_chunks`, unavailable at `start_command` time). `recorder=None` is
-    a silent no-op, matching `start_command`."""
-    if recorder is None:
+def update_action(action: dict[str, Any]) -> None:
+    """Merge new fields into whatever command is currently open in this
+    Task's action, for fields only known after the command runs (e.g.
+    `index`'s `file_count`/`total_chunks`, unavailable at `start_command`
+    time). Reads the "current" handle the same way `record_provider_call`
+    does -- for calling from deep inside a command's own implementation,
+    not from the CLI/MCP dispatch chokepoint itself. A silent no-op if no
+    command is open."""
+    current = _current.get()
+    if current is None:
         return
+    recorder, handle = current
     try:
         recorder.update_action(handle, json.dumps(action, default=str))
     except Exception:

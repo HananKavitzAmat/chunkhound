@@ -7,13 +7,51 @@ import multiprocessing
 import sys
 import time
 from datetime import datetime
+from pathlib import Path
 
 from loguru import logger
 
+from chunkhound.core import analytics as ch_analytics
 from chunkhound.utils.windows_constants import IS_WINDOWS
 
 from .utils.config_factory import create_validated_config
 from .utils.rich_output import install_default_log_sink
+
+# Per-command action fields for analytics, mirroring the MCP hook's
+# _ANALYTICS_ACTION_FIELDS -- a small, meaningful subset of CLI args per
+# command, not a generic argument dump. "index" is intentionally absent:
+# its action fields (mode/file_count/total_chunks) aren't fully known
+# until the run completes, and are filled in via ch_analytics.update_action
+# from inside run_command() itself.
+_ANALYTICS_ACTION_ARGS: dict[str, tuple[str, ...]] = {
+    "search": ("query", "commit_range", "commit_hash", "last_n_commits"),
+    "research": ("question",),
+    "websearch": ("query",),
+    "fetchurl": ("url",),
+}
+
+# Bounded, single-shot commands analytics wraps -- excludes "mcp" (handled by
+# the MCP tool-call hook instead), "_daemon" (long-running, per the design's
+# non-goal for long-running commands), and "_quickresearch" (an internal
+# subprocess spawned by research/websearch, not a user-facing entry point).
+_ANALYTICS_WRAPPED_COMMANDS = frozenset(
+    {
+        "index",
+        "search",
+        "research",
+        "websearch",
+        "fetchurl",
+        "map",
+        "autodoc",
+        "calibrate",
+    }
+)
+
+
+def _analytics_action_fields(command: str, args: argparse.Namespace) -> dict:
+    fields = _ANALYTICS_ACTION_ARGS.get(command, ())
+    return {k: getattr(args, k) for k in fields if getattr(args, k, None) is not None}
+
 
 # Required for PyInstaller multiprocessing support
 multiprocessing.freeze_support()
@@ -66,10 +104,7 @@ def _install_logging_to_loguru_bridge(*, verbose: bool = False) -> None:
 
             frame: FrameType | None = _logging.currentframe()
             depth = 2
-            while (
-                frame is not None
-                and frame.f_code.co_filename == _logging.__file__
-            ):
+            while frame is not None and frame.f_code.co_filename == _logging.__file__:
                 frame = frame.f_back
                 depth += 1
 
@@ -251,6 +286,20 @@ async def async_main() -> None:
         f"duration={config_validation_duration:.3f}s",
     )
 
+    analytics_recorder = ch_analytics.build_recorder(
+        getattr(config, "analytics", None), config.target_dir or Path.cwd()
+    )
+    analytics_handle = (
+        ch_analytics.start_command(
+            analytics_recorder,
+            args.command,
+            "cli",
+            _analytics_action_fields(args.command, args),
+        )
+        if args.command in _ANALYTICS_WRAPPED_COMMANDS
+        else 0
+    )
+
     try:
         if args.command == "index":
             # Dynamic import to avoid early chunkhound module loading
@@ -309,10 +358,16 @@ async def async_main() -> None:
             logger.info("Run 'chunkhound --help' for available commands.")
             sys.exit(1)
 
+        ch_analytics.end_command(analytics_recorder, analytics_handle, True)
+
     except KeyboardInterrupt:
+        # User-initiated, not a command failure -- deliberately not recorded
+        # as either a success or a failure in analytics.
         logger.info("Interrupted by user")
         sys.exit(0)
     except Exception as e:
+        ch_analytics.record_internal_error(type(e).__name__)
+        ch_analytics.end_command(analytics_recorder, analytics_handle, False)
         logger.error(f"Command failed: {e}")
         logger.exception("Full error details:")
         sys.exit(1)

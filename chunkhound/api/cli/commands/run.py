@@ -12,6 +12,7 @@ from typing import Any
 
 from loguru import logger
 
+from chunkhound.core import analytics as ch_analytics
 from chunkhound.core.config.config import Config
 from chunkhound.core.constants import EMBEDDING_MODEL_UPGRADES
 from chunkhound.core.embedding_model_drift import ModelDrift, format_drift_warning
@@ -178,8 +179,10 @@ async def _handle_daemon_lock_conflict(
     formatter.warning(f"ChunkHound daemon (pid={pid}) is unresponsive.")
     try:
         reply = (
-            await asyncio.to_thread(input, "Kill it and continue indexing? [Y/n]: ")
-        ).strip().lower()
+            (await asyncio.to_thread(input, "Kill it and continue indexing? [Y/n]: "))
+            .strip()
+            .lower()
+        )
     except (EOFError, KeyboardInterrupt):
         return False
 
@@ -319,6 +322,19 @@ async def run_command(args: argparse.Namespace, config: Config) -> None:
             # Process directory - service layers will add subtasks to progress_instance
             stats = await indexing_service.process_directory(
                 Path(args.path), no_embeddings=args.no_embeddings
+            )
+
+            # mode/file_count/total_chunks aren't known at start_command time
+            # (analytics is opened at the CLI dispatch level in main.py,
+            # before any indexing has run) -- fill them in now.
+            ch_analytics.update_action(
+                {
+                    "mode": "initial"
+                    if initial_stats.get("files", 0) == 0
+                    else "reindex",
+                    "file_count": stats.files_processed,
+                    "total_chunks": stats.chunks_created,
+                }
             )
 
         # Performance diagnostics analysis
@@ -550,9 +566,7 @@ def _validate_run_arguments(
             if not provider:
                 formatter.error("No embedding provider configured.")
                 formatter.info("To fix this, you can:")
-                formatter.info(
-                    "  1. Generate a config at https://chunkhound.ai"
-                )
+                formatter.info("  1. Generate a config at https://chunkhound.ai")
                 formatter.info("  2. Create .chunkhound.json manually")
                 formatter.info("  3. Use --no-embeddings to skip embeddings")
                 return False

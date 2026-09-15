@@ -18,6 +18,7 @@ from chunkhound.core.analytics.recorder import (
     record_internal_error,
     record_provider_call,
     start_command,
+    update_action,
 )
 from chunkhound.core.config.analytics_config import AnalyticsConfig
 
@@ -127,3 +128,28 @@ def test_internal_error_suppressed_when_a_provider_already_failed(
     events = _read_buffer_events(tmp_path / "analytics")
     assert events[0]["internal_error_type"] is None
     assert events[0]["providers"]["llm"][0]["fails"] == 1
+
+
+def test_update_action_merges_fields_known_only_after_the_command_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mirrors the index command: mode is known at start_command time,
+    file_count/total_chunks only after indexing finishes."""
+    monkeypatch.setattr(
+        "chunkhound.core.analytics.recorder._ANALYTICS_DIR", tmp_path / "analytics"
+    )
+    recorder = build_recorder(AnalyticsConfig(enabled=True), tmp_path)
+    handle = start_command(recorder, "index", "cli", {"mode": "initial"})
+    update_action({"file_count": 42, "total_chunks": 1337})
+    end_command(recorder, handle, True)
+
+    events = _read_buffer_events(tmp_path / "analytics")
+    assert events[0]["action"] == {
+        "mode": "initial",
+        "file_count": 42,
+        "total_chunks": 1337,
+    }
+
+
+def test_update_action_without_an_open_command_is_a_silent_noop() -> None:
+    update_action({"file_count": 1})
