@@ -779,7 +779,19 @@ async def run_rust_pipeline(
             getattr(embedding_cfg, "client_side_truncation", False)
         ),
         "embedding_api_version": getattr(embedding_cfg, "api_version", None),
-        "embedding_ssl_verify": bool(getattr(embedding_cfg, "ssl_verify", True)),
+        # ssl_verify is scoped to custom endpoints, mirroring
+        # EmbeddingConfig.get_provider_config() and openai_provider's
+        # verify_tls: the official endpoint (and Azure, which must leave
+        # base_url unset) always gets real TLS verification, even when the
+        # caller disabled it for some other URL such as a self-hosted
+        # reranker. Forwarding it unconditionally would let that unrelated
+        # setting turn off certificate checking on requests that carry the
+        # API key to api.openai.com.
+        "embedding_ssl_verify": (
+            bool(getattr(embedding_cfg, "ssl_verify", True))
+            if embedding_base_url
+            else True
+        ),
         "embedding_is_azure": bool(embedding_azure_endpoint),
         "embedding_azure_endpoint": embedding_azure_endpoint,
         "embedding_azure_deployment": getattr(

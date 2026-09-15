@@ -196,6 +196,36 @@ pub(crate) fn default_retry<T>(
     )
 }
 
+// ── Error classification ────────────────────────────────────────────────────
+
+/// Whether a 400 response body reports a per-request context/token-length
+/// overflow, i.e. the one failure `embed_with_split` can actually recover from.
+///
+/// Mirrors the three conjunctive predicates in Python's
+/// `openai_provider._embed_batch_internal`. Deliberately *not* a bare
+/// "context" or "token"+"limit" match: those also fire on quota and
+/// malformed-request 400s, which splitting cannot fix. Misclassifying one
+/// costs `2N-1` requests for an N-input batch (the recursive halving in
+/// `embed_with_split`, which is excluded from retry so each node is a single
+/// call) and then reports "input exceeds the provider context limit" for every
+/// chunk, burying the real cause.
+///
+/// Expects an already-lowercased body. Python's predicates are case-sensitive;
+/// matching case-insensitively is a deliberate widening, since it only adds
+/// bodies that differ from the known wording by capitalisation and it errs
+/// toward the recoverable path.
+///
+/// Shared by both providers on purpose: this classifier has needed three
+/// upstream revisions (most recently #404), and a per-provider copy is the
+/// likeliest way a future fix lands in one file only.
+pub(crate) fn is_context_length_error(body_lower: &str) -> bool {
+    (body_lower.contains("maximum context length") && body_lower.contains("tokens"))
+        || (body_lower.contains("tokens")
+            && body_lower.contains("max")
+            && body_lower.contains("per request"))
+        || (body_lower.contains("input length exceeds") && body_lower.contains("context length"))
+}
+
 // ── Error sanitisation ──────────────────────────────────────────────────────
 
 /// Replace control characters, redact the API secret, and truncate long
@@ -217,5 +247,55 @@ pub(crate) fn sanitize(value: String, secret: Option<&str>) -> String {
             "{}...",
             value.chars().take(MAX_ERROR_LEN).collect::<String>()
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The three phrasings Python recognises, lowercased as `parse_response`
+    /// hands them over. Each must reach the recoverable split path.
+    #[test]
+    fn recognizes_every_python_context_length_phrasing() {
+        assert!(is_context_length_error(
+            "this model's maximum context length is 8192 tokens, however you \
+             requested 10000 tokens."
+        ));
+        assert!(is_context_length_error(
+            "your request has 9001 tokens which exceeds the 8192 max tokens per request."
+        ));
+        assert!(is_context_length_error(
+            "input length exceeds context length limit of 8192"
+        ));
+    }
+
+    /// The regression this guards: a bare "context" or "token"+"limit" match
+    /// also fires on quota and malformed-request 400s. Splitting cannot fix
+    /// those -- it costs 2N-1 requests against an endpoint that already said
+    /// no, and then reports a context-length failure for every chunk, hiding
+    /// the real cause.
+    #[test]
+    fn rejects_non_length_400_bodies() {
+        assert!(!is_context_length_error(
+            "api token limit exceeded for this organization"
+        ));
+        assert!(!is_context_length_error(
+            "unsupported parameter 'dimensions' for this model in the embeddings context"
+        ));
+        assert!(!is_context_length_error("invalid api token"));
+        assert!(!is_context_length_error(
+            "the response was filtered due to the content management policy"
+        ));
+        assert!(!is_context_length_error(""));
+    }
+
+    /// Python's predicates are case-sensitive; ours are not. That widening is
+    /// deliberate -- it only adds bodies differing by capitalisation, and errs
+    /// toward the recoverable path.
+    #[test]
+    fn matching_is_case_insensitive_on_the_lowercased_body() {
+        let body = "This Model's Maximum Context Length Is 8192 Tokens".to_lowercase();
+        assert!(is_context_length_error(&body));
     }
 }

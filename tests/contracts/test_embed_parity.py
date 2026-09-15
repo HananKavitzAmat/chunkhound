@@ -163,11 +163,16 @@ class TestRequestShapeParity:
     and shared_utils.build_dimension_request_param):
 
     - ``dimensions`` is included iff output_dims is set AND NOT client_side_truncation
-      AND (matryoshka OR custom base_url OR Azure OR the model is unknown to
-      ``OPENAI_MODEL_CONFIG``). The "unknown model" branch can't be exercised
-      here since this harness always sets a custom base_url (see
-      ``dimensions_sent_for_unknown_model_on_official_endpoint`` in
-      ``src/embed/openai.rs`` for the official-endpoint case).
+      AND (matryoshka OR the endpoint is not official OR the model is unknown to
+      ``OPENAI_MODEL_CONFIG``). "Not official" is
+      ``not is_official_openai_endpoint(base_url)`` — an unset base_url *and* an
+      explicit ``https://api.openai.com/...`` both count as official, and Azure
+      (which leaves base_url unset) is therefore not a bypass either.
+      This harness always points base_url at its mock server and never sets
+      ``embedding_model_known``, so it is permanently inside the
+      "not official" *and* "unknown model" branches: the withholding branch
+      is unreachable here and is covered by the ``dimensions_*`` unit tests in
+      ``src/embed/openai.rs`` instead.
     - For standard (non-Azure) OpenAI: always ``Authorization: Bearer <key>``.
     - For VoyageAI: body always includes ``"input_type": "document"`` and
       ``"truncation": true``; dimension param name is ``"output_dimension"``.
@@ -331,14 +336,60 @@ class TestContextLengthClassification:
             )
 
         with _ScriptableServer(responses=[_first_request_fails]) as server:
-            # VoyageAI also uses the same context-length classification; test
-            # both providers to ensure the fix is applied to both files.
+            # Both providers share one classifier
+            # (``common.rs::is_context_length_error``), so this exercises the
+            # openai path and the shared predicate is unit-tested directly in
+            # ``src/embed/common.rs``.
             report = _run_pipeline(tmp_path / "openai", server)
 
         assert report.embeddings_generated > 0, (
             f"context-length pattern triggered hard failure instead of split; "
             f"pattern: {error_body[:80]!r}"
         )
+
+    def test_non_length_400_fails_fast_without_a_split_cascade(
+        self, tmp_path: Path
+    ) -> None:
+        """A 400 that merely mentions "context" must not be treated as a
+        context-length failure.
+
+        Splitting cannot fix a rejected parameter, so the batch must fail on
+        the first request. Only that first request is scripted; per
+        ``_ScriptableServer``, once the queue drains every later request gets
+        a default 200. So a misclassification is visible twice over: it
+        recurses through ``embed_with_split`` (halving until singletons, up to
+        2N-1 requests against an endpoint that already refused the batch) and
+        those extra requests then succeed against the default handler. The
+        request count is the direct signal; the embedding count corroborates.
+
+        A misclassification also reports "input exceeds the provider context
+        limit" for every chunk, hiding the real cause from the user.
+        """
+
+        def _always_rejects(body: dict[str, Any]) -> tuple:
+            return (
+                400,
+                {},
+                {
+                    "error": {
+                        "message": (
+                            "Unsupported parameter 'dimensions' for this model "
+                            "in the embeddings context"
+                        ),
+                        "type": "invalid_request_error",
+                    }
+                },
+            )
+
+        with _ScriptableServer(responses=[_always_rejects]) as server:
+            report = _run_pipeline(tmp_path / "openai", server)
+            captured = len(server.captured)
+
+        assert captured == 1, (
+            f"non-length 400 triggered a split cascade: {captured} requests "
+            f"issued where 1 was expected"
+        )
+        assert report.embeddings_generated == 0
 
 
 # ── Suite 3: Retry semantics ──────────────────────────────────────────────────
