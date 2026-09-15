@@ -12,6 +12,7 @@ import httpx
 from loguru import logger
 from typing_extensions import NotRequired
 
+from chunkhound.core import analytics as ch_analytics
 from chunkhound.core.config.embedding_config import (
     RERANK_BASE_URL_REQUIRED,
     validate_rerank_configuration,
@@ -1136,8 +1137,29 @@ class OpenAIEmbeddingProvider:
                     f"Generating embeddings for {len(texts)} texts (attempt {attempt + 1})"
                 )
 
-                response = await self._client.embeddings.create(
-                    **self._build_embedding_request_kwargs(texts, self._timeout)
+                try:
+                    response = await self._client.embeddings.create(
+                        **self._build_embedding_request_kwargs(texts, self._timeout)
+                    )
+                except Exception as embed_call_error:
+                    ch_analytics.record_provider_call(
+                        "embedding",
+                        self.name,
+                        self._model,
+                        False,
+                        error_type=type(embed_call_error).__name__,
+                    )
+                    raise
+                ch_analytics.record_provider_call(
+                    "embedding",
+                    self.name,
+                    self._model,
+                    True,
+                    input_tokens=(
+                        response.usage.total_tokens
+                        if hasattr(response, "usage") and response.usage
+                        else None
+                    ),
                 )
 
                 # Extract embeddings from response, sorted by original input order
@@ -1881,19 +1903,32 @@ class OpenAIEmbeddingProvider:
                     f"SSL verification disabled for rerank endpoint: {rerank_endpoint}"
                 )
 
-            async with httpx.AsyncClient(**client_kwargs) as client:
-                headers = {"Content-Type": "application/json"}
+            try:
+                async with httpx.AsyncClient(**client_kwargs) as client:
+                    headers = {"Content-Type": "application/json"}
 
-                # Add Authorization header if API key is set (required for TEI with --api-key)
-                if self._api_key:
-                    headers["Authorization"] = f"Bearer {self._api_key}"
-                    logger.debug("Added Authorization header for rerank request")
+                    # Add Authorization header if API key is set (required for TEI with --api-key)
+                    if self._api_key:
+                        headers["Authorization"] = f"Bearer {self._api_key}"
+                        logger.debug("Added Authorization header for rerank request")
 
-                response = await client.post(
-                    rerank_endpoint, json=payload, headers=headers
+                    response = await client.post(
+                        rerank_endpoint, json=payload, headers=headers
+                    )
+                    response.raise_for_status()
+                    response_data = response.json()
+            except Exception as rerank_call_error:
+                ch_analytics.record_provider_call(
+                    "reranker",
+                    self.name,
+                    self._rerank_model or "unknown",
+                    False,
+                    error_type=type(rerank_call_error).__name__,
                 )
-                response.raise_for_status()
-                response_data = response.json()
+                raise
+            ch_analytics.record_provider_call(
+                "reranker", self.name, self._rerank_model or "unknown", True
+            )
 
             # Normalize response format: TEI servers may return bare array or wrapped dict
             # Real TEI servers: [{"index": 0, "score": 0.95}, ...]
