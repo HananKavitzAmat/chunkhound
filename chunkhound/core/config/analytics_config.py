@@ -97,6 +97,5 @@ class AnalyticsConfig(BaseModel):
     def __repr__(self) -> str:
         """String representation of analytics configuration."""
         return (
-            f"AnalyticsConfig(enabled={self.enabled}, "
-            f"privacy_mode={self.privacy_mode})"
+            f"AnalyticsConfig(enabled={self.enabled}, privacy_mode={self.privacy_mode})"
         )

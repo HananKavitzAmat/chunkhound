@@ -35,7 +35,9 @@ def test_load_from_env_parses_enabled_and_privacy_mode(
 def test_load_from_env_parses_s3_and_flush_settings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("CHUNKHOUND_ANALYTICS__S3_ENDPOINT_URL", "https://minio.internal")
+    monkeypatch.setenv(
+        "CHUNKHOUND_ANALYTICS__S3_ENDPOINT_URL", "https://minio.internal"
+    )
     monkeypatch.setenv("CHUNKHOUND_ANALYTICS__S3_BUCKET", "usage-events")
     monkeypatch.setenv("CHUNKHOUND_ANALYTICS__FLUSH_INTERVAL_SECONDS", "60")
     monkeypatch.setenv("CHUNKHOUND_ANALYTICS__FLUSH_BATCH_SIZE", "10")
