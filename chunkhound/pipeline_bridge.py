@@ -266,7 +266,7 @@ def embed_batch_callback(
     *,
     embedding_cfg: Any = None,
     cache: "_EmbedThreadCache | None" = None,
-    analytics: tuple[Any, int] | None = None,
+    analytics: tuple[Any, int, bool] | None = None,
 ) -> list[list[float]]:
     """Parallel batch embed (called from Rust rayon threads with GIL held).
 
@@ -300,7 +300,7 @@ def _embed_batch(
     texts: list[str],
     embedding_cfg: Any = None,
     cache: "_EmbedThreadCache | None" = None,
-    analytics: tuple[Any, int] | None = None,
+    analytics: tuple[Any, int, bool] | None = None,
 ) -> list[list[float]]:
     """Shared embed helper — run the async provider.embed() synchronously.
 

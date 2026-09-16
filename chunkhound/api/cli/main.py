@@ -22,10 +22,12 @@ from .utils.rich_output import install_default_log_sink
 # command, not a generic argument dump. "index" is intentionally absent:
 # its action fields (mode/file_count/total_chunks) aren't fully known
 # until the run completes, and are filled in via ch_analytics.update_action
-# from inside run_command() itself.
+# from inside run_command() itself. Values here must match each subcommand
+# parser's actual argparse dest name -- "research"'s positional arg is
+# named `query` (see api/cli/parsers/research_parser.py), not `question`.
 _ANALYTICS_ACTION_ARGS: dict[str, tuple[str, ...]] = {
     "search": ("query", "commit_range", "commit_hash", "last_n_commits"),
-    "research": ("question",),
+    "research": ("query",),
     "websearch": ("query",),
     "fetchurl": ("url",),
 }
@@ -297,9 +299,8 @@ async def async_main() -> None:
             analytics_recorder,
             args.command,
             "cli",
-            ch_analytics.redact_action_fields(
-                _analytics_action_fields(args.command, args), _save_sensitive_data
-            ),
+            _analytics_action_fields(args.command, args),
+            _save_sensitive_data,
         )
         if args.command in _ANALYTICS_WRAPPED_COMMANDS
         else 0

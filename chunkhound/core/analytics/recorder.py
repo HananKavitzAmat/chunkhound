@@ -8,14 +8,18 @@ src/AGENTS.md). What lives here:
   target directory into a constructed native recorder. Always succeeds --
   falls back to a disabled recorder on any construction failure, since
   analytics must never be the reason a host command fails to start.
-- A `contextvars`-based "current (recorder, handle)" convenience, used by
-  call sites that don't have an explicit handle to hand (LLM/embedding
-  provider calls, several stack frames below the MCP/CLI hook that opened
-  the command). This is safe for ordinary single-threaded Python call
-  chains -- each asyncio Task gets its own copy of the context -- and is
-  NOT used across the Rust rayon thread-pool boundary during indexing;
-  that boundary threads the recorder through explicitly instead (see
-  chunkhound/pipeline_bridge.py and the Phase 4 native-path wiring).
+- A `contextvars`-based "current (recorder, handle, save_sensitive_data)"
+  convenience, used by call sites that don't have an explicit handle to
+  hand (LLM/embedding provider calls, several stack frames below the
+  MCP/CLI hook that opened the command). This is safe for ordinary
+  single-threaded Python call chains -- each asyncio Task gets its own copy
+  of the context -- and is NOT used across the Rust rayon thread-pool
+  boundary during indexing; that boundary threads the recorder through
+  explicitly instead (see chunkhound/pipeline_bridge.py and the Phase 4
+  native-path wiring).
+- `redact_action_fields()`: the single enforcement point for
+  `save_sensitive_data`, applied inside both `start_command()` and
+  `update_action()` so no caller can forget it -- see those functions.
 """
 
 import contextvars
@@ -39,16 +43,20 @@ _ANALYTICS_DIR = Path.home() / ".config" / "chunkhound" / "analytics"
 # the MCP and CLI dispatch chokepoints (see redact_action_fields()).
 SENSITIVE_ACTION_FIELDS = frozenset({"query", "question", "url"})
 
-# (recorder, handle) for the command currently open in this asyncio
-# Task/thread of control, or None. Never shared across asyncio Tasks or OS
-# threads -- see module docstring.
-_current: "contextvars.ContextVar[tuple[Any, int] | None]" = contextvars.ContextVar(
-    "chunkhound_analytics_current", default=None
+# (recorder, handle, save_sensitive_data) for the command currently open in
+# this asyncio Task/thread of control, or None. Never shared across asyncio
+# Tasks or OS threads -- see module docstring. save_sensitive_data is
+# captured here (set once by start_command) so update_action() can enforce
+# redaction on its own, without every caller having to remember to do it --
+# see redact_action_fields().
+_current: "contextvars.ContextVar[tuple[Any, int, bool] | None]" = (
+    contextvars.ContextVar("chunkhound_analytics_current", default=None)
 )
 
 
-def get_current() -> tuple[Any, int] | None:
-    """Read the (recorder, handle) currently open in this Task, or None.
+def get_current() -> tuple[Any, int, bool] | None:
+    """Read the (recorder, handle, save_sensitive_data) currently open in
+    this Task, or None.
 
     For callers that need to explicitly carry the binding across a
     boundary the ContextVar can't cross on its own -- e.g. resolving it on
@@ -60,8 +68,11 @@ def get_current() -> tuple[Any, int] | None:
     return _current.get()
 
 
-def bind_current(recorder: Any | None, handle: int) -> None:
-    """Explicitly set (recorder, handle) as "current" on this OS thread.
+def bind_current(
+    recorder: Any | None, handle: int, save_sensitive_data: bool = False
+) -> None:
+    """Explicitly set (recorder, handle, save_sensitive_data) as "current"
+    on this OS thread.
 
     For callers that can't rely on ContextVar auto-propagation -- a Rust
     rayon worker thread invoking a Python embed callback gets a fresh,
@@ -69,9 +80,11 @@ def bind_current(recorder: Any | None, handle: int) -> None:
     they cross asyncio Task boundaries). Call this once, on that thread,
     immediately before the instrumented provider call it's meant to cover.
     `recorder=None` clears any stale binding rather than setting a
-    (None, handle) pair that would itself need a None-check everywhere.
+    (None, handle, ...) pair that would itself need a None-check everywhere.
     """
-    _current.set((recorder, handle) if recorder is not None else None)
+    _current.set(
+        (recorder, handle, save_sensitive_data) if recorder is not None else None
+    )
 
 
 def build_recorder(config: AnalyticsConfig | None, target_dir: Path) -> Any:
@@ -118,10 +131,13 @@ def redact_action_fields(
 ) -> dict[str, Any]:
     """Null out sensitive action field values when `save_sensitive_data` is
     false, keeping the field present (so downstream consumers still see it
-    existed) rather than dropping the key. Call sites: the MCP/CLI dispatch
-    chokepoints, right after building the raw action dict and before handing
-    it to `start_command`. A pure pass-through when `save_sensitive_data` is
-    true."""
+    existed) rather than dropping the key. A pure pass-through when
+    `save_sensitive_data` is true.
+
+    Called internally by `start_command()`/`update_action()` -- this is the
+    enforcement point, not something callers need to invoke themselves.
+    Exposed as a module-level function (rather than nested/private) so it
+    stays independently unit-testable."""
     if save_sensitive_data:
         return fields
     return {
@@ -130,7 +146,11 @@ def redact_action_fields(
 
 
 def start_command(
-    recorder: Any | None, command: str, source: str, action: dict[str, Any]
+    recorder: Any | None,
+    command: str,
+    source: str,
+    action: dict[str, Any],
+    save_sensitive_data: bool = False,
 ) -> int:
     """Open a command, set it as "current" for this Task, and return its handle.
 
@@ -138,22 +158,31 @@ def start_command(
     no-op returning handle 0 -- callers never need to guard this call with
     an `if recorder is not None`.
 
+    `action` is redacted here via `redact_action_fields()` before it's ever
+    serialized -- callers should pass the raw, unredacted action dict.
+    `save_sensitive_data` is also captured as "current" alongside the
+    recorder/handle so a later `update_action()` call (which may run deep
+    inside a command's own implementation, with no access to config) can
+    enforce the same redaction policy on its own, rather than trusting every
+    future caller to redact before calling in.
+
     Callers (MCP/CLI hooks) should still hold the returned handle explicitly
     and pass it to `end_command` -- the ContextVar is only a convenience for
     deeper call sites, not a replacement for that.
     """
     if recorder is None:
         return 0
+    redacted = redact_action_fields(action, save_sensitive_data)
     try:
         handle = int(
-            recorder.start_command(command, source, json.dumps(action, default=str))
+            recorder.start_command(command, source, json.dumps(redacted, default=str))
         )
     except Exception:
         logger.opt(exception=True).debug(
             "analytics: start_command failed, dropping event"
         )
         return 0
-    _current.set((recorder, handle))
+    _current.set((recorder, handle, save_sensitive_data))
     return handle
 
 
@@ -164,13 +193,19 @@ def update_action(action: dict[str, Any]) -> None:
     time). Reads the "current" handle the same way `record_provider_call`
     does -- for calling from deep inside a command's own implementation,
     not from the CLI/MCP dispatch chokepoint itself. A silent no-op if no
-    command is open."""
+    command is open.
+
+    Applies `redact_action_fields()` using the `save_sensitive_data` value
+    captured by `start_command()` for this command -- callers here, same as
+    `start_command`'s callers, should pass the raw, unredacted dict; this
+    is the enforcement point, not the caller's responsibility."""
     current = _current.get()
     if current is None:
         return
-    recorder, handle = current
+    recorder, handle, save_sensitive_data = current
+    redacted = redact_action_fields(action, save_sensitive_data)
     try:
-        recorder.update_action(handle, json.dumps(action, default=str))
+        recorder.update_action(handle, json.dumps(redacted, default=str))
     except Exception:
         logger.opt(exception=True).debug("analytics: update_action failed")
 
@@ -204,7 +239,7 @@ def record_provider_call(
     current = _current.get()
     if current is None:
         return
-    recorder, handle = current
+    recorder, handle, _save_sensitive_data = current
     try:
         recorder.record_provider_call(
             handle,
@@ -226,7 +261,7 @@ def record_internal_error(error_type: str) -> None:
     current = _current.get()
     if current is None:
         return
-    recorder, handle = current
+    recorder, handle, _save_sensitive_data = current
     try:
         recorder.record_internal_error(handle, error_type)
     except Exception:

@@ -172,11 +172,14 @@ def validate_search_parameters(
 # Per-command action fields for analytics (see the ChunkHound Per-User
 # Analytics design doc) -- a small, meaningful subset of arguments per tool,
 # not a generic dump of everything. Tools absent here (e.g. daemon_status)
-# get an empty action payload.
+# get an empty action payload. Keys must match the registered MCP tool name
+# (see @register_tool(name=...) in tools.py) and the value tuples must match
+# that tool's actual parameter names -- "code_research"'s param is `query`,
+# not `question` (there is no MCP tool literally named "research"; that's a
+# CLI-only command, see _ANALYTICS_ACTION_ARGS in api/cli/main.py).
 _ANALYTICS_ACTION_FIELDS: dict[str, tuple[str, ...]] = {
     "search": ("query", "commit_range", "commit_hash", "last_n_commits"),
-    "code_research": ("question",),
-    "research": ("question",),
+    "code_research": ("query",),
     "websearch": ("query",),
     "fetchurl": ("url",),
 }
@@ -234,9 +237,8 @@ async def handle_tool_call(
         analytics_recorder,
         tool_name,
         "mcp",
-        ch_analytics.redact_action_fields(
-            _analytics_action_fields(tool_name, arguments), save_sensitive_data
-        ),
+        _analytics_action_fields(tool_name, arguments),
+        save_sensitive_data,
     )
     try:
         # Lazy import at runtime to construct MCP content objects without

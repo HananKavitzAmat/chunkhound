@@ -69,8 +69,16 @@ impl AnalyticsRecorder {
     /// repository_dir (str), os_username (str), chunkhound_version (str —
     /// pass `chunkhound.__version__`, not this crate's own version).
     #[new]
-    fn new(config: &Bound<'_, PyDict>) -> PyResult<Self> {
-        let inner = build_inner(config);
+    fn new(py: Python<'_>, config: &Bound<'_, PyDict>) -> PyResult<Self> {
+        // Extracting from the PyDict needs the GIL, but everything
+        // build_inner_from_raw() does with the extracted (owned) RawConfig
+        // -- resolving the repository name via a synchronous `git` shell-out,
+        // creating the buffer dir, building the reqwest client, reading/
+        // writing the salt file -- is blocking I/O with no reason to hold
+        // the GIL for it, so it runs under allow_threads(), same pattern as
+        // shutdown().
+        let raw = extract_raw_config(config);
+        let inner = py.allow_threads(|| raw.and_then(build_inner_from_raw));
         let mut recorder = Self {
             inner: inner.map(Arc::new),
             flush_thread: Mutex::new(None),
@@ -266,10 +274,14 @@ impl Default for RawConfig {
     }
 }
 
-fn build_inner(config: &Bound<'_, PyDict>) -> Option<Inner> {
+/// GIL-bound extraction only -- no I/O. Must run before `py.allow_threads()`
+/// since it borrows the PyDict; the returned `RawConfig` is fully owned so
+/// the actual (blocking) construction work in `build_inner_from_raw` can run
+/// with the GIL released. See `AnalyticsRecorder::new`.
+fn extract_raw_config(config: &Bound<'_, PyDict>) -> Option<RawConfig> {
     let buffer_dir: String = get(config, "buffer_dir")?;
     let salt_path: String = get(config, "salt_path")?;
-    let raw = RawConfig {
+    Some(RawConfig {
         enabled: get(config, "enabled").unwrap_or(false),
         privacy_mode: get(config, "privacy_mode").unwrap_or_else(|| "full".to_string()),
         s3_endpoint_url: get(config, "s3_endpoint_url"),
@@ -287,8 +299,7 @@ fn build_inner(config: &Bound<'_, PyDict>) -> Option<Inner> {
         chunkhound_version: get(config, "chunkhound_version")
             .unwrap_or_else(|| "unknown".to_string()),
         ..RawConfig::default()
-    };
-    build_inner_from_raw(raw)
+    })
 }
 
 fn build_inner_from_raw(raw: RawConfig) -> Option<Inner> {

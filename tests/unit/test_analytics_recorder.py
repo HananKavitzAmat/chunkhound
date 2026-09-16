@@ -61,7 +61,15 @@ def test_enabled_recorder_writes_a_well_formed_command_summary(
     )
     recorder = build_recorder(config, tmp_path)
 
-    handle = start_command(recorder, "search", "mcp", {"query": "explain indexing"})
+    # save_sensitive_data=True: this test is about the well-formed shape of
+    # the whole event, not redaction -- see the dedicated redaction tests.
+    handle = start_command(
+        recorder,
+        "search",
+        "mcp",
+        {"query": "explain indexing"},
+        save_sensitive_data=True,
+    )
     record_provider_call(
         "llm", "anthropic", "claude", True, input_tokens=900, output_tokens=210
     )
@@ -159,6 +167,28 @@ def test_update_action_without_an_open_command_is_a_silent_noop() -> None:
     update_action({"file_count": 1})
 
 
+def test_update_action_redacts_sensitive_fields_on_its_own(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression guard for the design gap the independent review flagged:
+    update_action() must enforce save_sensitive_data itself, using the value
+    captured by start_command() -- callers (e.g. a future command merging a
+    free-text field deep inside its own implementation) must not be able to
+    bypass redaction just by going through update_action instead of the
+    initial start_command action dict."""
+    monkeypatch.setattr(
+        "chunkhound.core.analytics.recorder._ANALYTICS_DIR", tmp_path / "analytics"
+    )
+    recorder = build_recorder(AnalyticsConfig(enabled=True), tmp_path)
+    handle = start_command(recorder, "search", "cli", {}, save_sensitive_data=False)
+    # A raw, unredacted dict -- update_action must redact this itself.
+    update_action({"query": "explain indexing", "commit_hash": "abc123"})
+    end_command(recorder, handle, True)
+
+    events = _read_buffer_events(tmp_path / "analytics")
+    assert events[0]["action"] == {"query": None, "commit_hash": "abc123"}
+
+
 def test_get_current_returns_none_when_nothing_is_open() -> None:
     assert get_current() is None
 
@@ -166,7 +196,7 @@ def test_get_current_returns_none_when_nothing_is_open() -> None:
 def test_get_current_matches_what_start_command_set(tmp_path: Path) -> None:
     recorder = build_recorder(AnalyticsConfig(enabled=False), tmp_path)
     handle = start_command(recorder, "search", "cli", {})
-    assert get_current() == (recorder, handle)
+    assert get_current() == (recorder, handle, False)
 
 
 def test_bind_current_makes_the_binding_visible_to_record_provider_call(

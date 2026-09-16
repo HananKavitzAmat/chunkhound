@@ -125,6 +125,32 @@ async def test_non_sensitive_action_fields_survive_redaction(recorder) -> None:
 
 
 @pytest.mark.asyncio
+async def test_code_research_action_fields_extract_the_query(recorder) -> None:
+    # Regression guard: _ANALYTICS_ACTION_FIELDS["code_research"] used to be
+    # keyed on "question", but deep_research_impl's real parameter is
+    # `query` -- that mapping silently recorded nothing. code_research
+    # requires embeddings/llm/reranker (none wired here) so the tool call
+    # itself fails after dispatch, but action-field extraction happens in
+    # start_command(), before that capability check, so this still proves
+    # the query is captured under the real key.
+    rec, buffer_dir = recorder
+    config = SimpleNamespace(analytics=SimpleNamespace(save_sensitive_data=True))
+    await _call("code_research", {"query": "how does auth work?"}, rec, config)
+
+    events = _read_events(buffer_dir)
+    assert events[-1]["action"] == {"query": "how does auth work?"}
+
+
+@pytest.mark.asyncio
+async def test_code_research_query_is_redacted_by_default(recorder) -> None:
+    rec, buffer_dir = recorder
+    await _call("code_research", {"query": "how does auth work?"}, rec)
+
+    events = _read_events(buffer_dir)
+    assert events[-1]["action"] == {"query": None}
+
+
+@pytest.mark.asyncio
 async def test_failed_tool_call_records_internal_error_type(recorder) -> None:
     rec, buffer_dir = recorder
     await _call("_analytics_test_fail", {"query": "x"}, rec)
