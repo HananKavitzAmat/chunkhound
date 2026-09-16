@@ -139,36 +139,14 @@ impl OpenAiProvider {
         ))
     }
 
-    /// One vendor call attempt. Records exactly one analytics
-    /// `record_provider_call` here — this is called once per
+    /// One vendor call attempt. Records exactly one analytics event via
+    /// [`super::common::record_embed_attempt`] — this is called once per
     /// `request_with_retry`'s retry-loop iteration, matching the design's
     /// "calls = every attempt including retries" semantics, with zero
     /// further threading needed in `request_with_retry`/`run_embed_batch`.
     fn request_once(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, PipelineError> {
         let result = self.request_once_inner(texts);
-        if let Some((analytics, handle)) = &self.config.analytics {
-            let call = match &result {
-                Ok((_, input_tokens)) => crate::analytics::ProviderCall {
-                    kind: "embedding",
-                    provider: &self.config.provider,
-                    model: &self.config.model,
-                    success: true,
-                    error_type: None,
-                    input_tokens: *input_tokens,
-                    output_tokens: None,
-                },
-                Err(e) => crate::analytics::ProviderCall {
-                    kind: "embedding",
-                    provider: &self.config.provider,
-                    model: &self.config.model,
-                    success: false,
-                    error_type: Some(e.analytics_error_type()),
-                    input_tokens: None,
-                    output_tokens: None,
-                },
-            };
-            analytics.record_provider_call(*handle, call);
-        }
+        super::common::record_embed_attempt(&self.config, &result);
         result.map(|(vectors, _)| vectors)
     }
 

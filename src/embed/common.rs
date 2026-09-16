@@ -181,6 +181,47 @@ pub(crate) fn run_embed_batch(
     Ok(result)
 }
 
+// ── Analytics ────────────────────────────────────────────────────────────────
+
+/// Record one vendor call attempt against the command bound to `config`, if
+/// any. Called once per `request_with_retry` retry-loop iteration, matching
+/// the design's "calls = every attempt including retries" semantics.
+///
+/// Shared by both providers on purpose: `OpenAiProvider`/`VoyageAiProvider`'s
+/// `request_once` bodies were byte-for-byte identical here, and a per-provider
+/// copy is exactly the kind of thing a future analytics-schema change would
+/// only land in one file, per this module's own precedent
+/// (`is_context_length_error`'s doc comment above).
+pub(crate) fn record_embed_attempt(
+    config: &EmbedConfig,
+    result: &Result<(Vec<Vec<f32>>, Option<u64>), PipelineError>,
+) {
+    let Some((analytics, handle)) = &config.analytics else {
+        return;
+    };
+    let call = match result {
+        Ok((_, input_tokens)) => crate::analytics::ProviderCall {
+            kind: "embedding",
+            provider: &config.provider,
+            model: &config.model,
+            success: true,
+            error_type: None,
+            input_tokens: *input_tokens,
+            output_tokens: None,
+        },
+        Err(e) => crate::analytics::ProviderCall {
+            kind: "embedding",
+            provider: &config.provider,
+            model: &config.model,
+            success: false,
+            error_type: Some(e.analytics_error_type()),
+            input_tokens: None,
+            output_tokens: None,
+        },
+    };
+    analytics.record_provider_call(*handle, call);
+}
+
 // ── Retry wrapper ───────────────────────────────────────────────────────────
 
 /// Convenience wrapper used by both providers' `request_with_retry` methods.

@@ -19,6 +19,7 @@ from chunkhound.core.analytics.recorder import (
 from chunkhound.core.config.analytics_config import AnalyticsConfig
 from chunkhound.providers.llm.anthropic_llm_provider import AnthropicLLMProvider
 from chunkhound.providers.llm.openai_compatible_provider import OpenAICompatibleProvider
+from chunkhound.providers.llm.openai_llm_provider import OpenAILLMProvider
 
 
 def _read_events(buffer_dir: Path) -> list[dict]:
@@ -117,6 +118,57 @@ async def test_openai_compatible_failure_records_a_failed_provider_call(
     provider = OpenAICompatibleProvider(api_key="test-key", model="gpt-4")
     provider._client = MagicMock()
     provider._client.chat.completions.create = AsyncMock(side_effect=ValueError("boom"))
+
+    with pytest.raises(Exception):
+        await provider.complete("hello")
+    end_command(recorder, handle, False)
+
+    llm = _read_events(buffer_dir)[-1]["providers"]["llm"][0]
+    assert llm["calls"] == 1
+    assert llm["fails"] == 1
+    assert llm["error_types"] == {"ValueError": 1}
+
+
+@pytest.mark.asyncio
+async def test_openai_responses_api_success_records_a_provider_call(
+    open_command,
+) -> None:
+    """Reasoning models (o1-pro, o3-pro, gpt-5.1, ...) route through the
+    Responses API instead of Chat Completions -- must go through the same
+    instrumented chokepoint as the Chat Completions path."""
+    recorder, handle, buffer_dir = open_command
+    provider = OpenAILLMProvider(api_key="test-key", model="o1-pro")
+    response = MagicMock()
+    response.output = [
+        MagicMock(
+            type="message",
+            content=[MagicMock(type="output_text", text="ok")],
+        )
+    ]
+    response.status = "completed"
+    response.usage = MagicMock(input_tokens=70, output_tokens=15, total_tokens=85)
+    provider._client = MagicMock()
+    provider._client.responses.create = AsyncMock(return_value=response)
+
+    await provider.complete("hello")
+    end_command(recorder, handle, True)
+
+    llm = _read_events(buffer_dir)[-1]["providers"]["llm"][0]
+    assert llm["provider"] == "openai"
+    assert llm["calls"] == 1
+    assert llm["fails"] == 0
+    assert llm["input_tokens"] == 70
+    assert llm["output_tokens"] == 15
+
+
+@pytest.mark.asyncio
+async def test_openai_responses_api_failure_records_a_failed_provider_call(
+    open_command,
+) -> None:
+    recorder, handle, buffer_dir = open_command
+    provider = OpenAILLMProvider(api_key="test-key", model="o1-pro")
+    provider._client = MagicMock()
+    provider._client.responses.create = AsyncMock(side_effect=ValueError("boom"))
 
     with pytest.raises(Exception):
         await provider.complete("hello")
