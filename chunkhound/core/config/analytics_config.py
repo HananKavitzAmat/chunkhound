@@ -33,11 +33,22 @@ class AnalyticsConfig(BaseModel):
         description="Opt-in: enable usage analytics reporting",
     )
 
-    privacy_mode: Literal["full", "hashed", "anonymous"] = Field(
+    anonymize: Literal["full", "hashed", "anonymous"] = Field(
         default="full",
         description=(
             "How to represent user identity: full (OS username), "
             "hashed (salted one-way hash, local salt), or anonymous (omitted)"
+        ),
+    )
+
+    save_sensitive_data: bool = Field(
+        default=False,
+        description=(
+            "Whether to record free-text action content (e.g. search query, "
+            "research question, fetched URL) verbatim. When false (the "
+            "default), those fields are still present in each event but "
+            "their value is replaced with null. Independent of `anonymize`, "
+            "which only controls the identity field, never action content."
         ),
     )
 
@@ -71,8 +82,15 @@ class AnalyticsConfig(BaseModel):
         if enabled := os.getenv("CHUNKHOUND_ANALYTICS__ENABLED"):
             config["enabled"] = enabled.lower() in ("true", "1", "yes")
 
-        if privacy_mode := os.getenv("CHUNKHOUND_ANALYTICS__PRIVACY_MODE"):
-            config["privacy_mode"] = privacy_mode.strip().lower()
+        if anonymize := os.getenv("CHUNKHOUND_ANALYTICS__ANONYMIZE"):
+            config["anonymize"] = anonymize.strip().lower()
+
+        if save_sensitive_data := os.getenv("CHUNKHOUND_ANALYTICS__SAVE_SENSITIVE_DATA"):
+            config["save_sensitive_data"] = save_sensitive_data.lower() in (
+                "true",
+                "1",
+                "yes",
+            )
 
         if endpoint := os.getenv("CHUNKHOUND_ANALYTICS__S3_ENDPOINT_URL"):
             config["s3_endpoint_url"] = endpoint
@@ -97,5 +115,6 @@ class AnalyticsConfig(BaseModel):
     def __repr__(self) -> str:
         """String representation of analytics configuration."""
         return (
-            f"AnalyticsConfig(enabled={self.enabled}, privacy_mode={self.privacy_mode})"
+            f"AnalyticsConfig(enabled={self.enabled}, anonymize={self.anonymize}, "
+            f"save_sensitive_data={self.save_sensitive_data})"
         )

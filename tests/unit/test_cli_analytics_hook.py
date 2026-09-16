@@ -42,14 +42,22 @@ def _read_events(buffer_dir: Path) -> list[dict]:
     return events
 
 
-def _patch_common(monkeypatch: pytest.MonkeyPatch, args, tmp_path: Path) -> Path:
+def _patch_common(
+    monkeypatch: pytest.MonkeyPatch,
+    args,
+    tmp_path: Path,
+    save_sensitive_data: bool = False,
+) -> Path:
     buffer_dir = tmp_path / "analytics"
     monkeypatch.setattr("chunkhound.core.analytics.recorder._ANALYTICS_DIR", buffer_dir)
     monkeypatch.setattr(cli_main, "create_parser", lambda: _Parser(args))
     monkeypatch.setattr(cli_main, "setup_logging", lambda _verbose: None)
     config = SimpleNamespace(
         analytics=AnalyticsConfig(
-            enabled=True, flush_interval_seconds=999999, flush_batch_size=999999
+            enabled=True,
+            flush_interval_seconds=999999,
+            flush_batch_size=999999,
+            save_sensitive_data=save_sensitive_data,
         ),
         target_dir=tmp_path,
     )
@@ -64,7 +72,10 @@ async def test_successful_search_command_records_one_command_summary(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     args = SimpleNamespace(command="search", verbose=False, query="explain indexing")
-    buffer_dir = _patch_common(monkeypatch, args, tmp_path)
+    # save_sensitive_data opted in here since this test is about the command
+    # lifecycle/action extraction, not redaction -- see the dedicated
+    # redaction tests below for the default (redacted) behavior.
+    buffer_dir = _patch_common(monkeypatch, args, tmp_path, save_sensitive_data=True)
 
     from chunkhound.api.cli.commands import search as search_module
 
@@ -79,6 +90,23 @@ async def test_successful_search_command_records_one_command_summary(
     assert event["source"] == "cli"
     assert event["success"] is True
     assert event["action"] == {"query": "explain indexing"}
+
+
+@pytest.mark.asyncio
+async def test_sensitive_action_fields_are_redacted_by_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    args = SimpleNamespace(command="search", verbose=False, query="explain indexing")
+    buffer_dir = _patch_common(monkeypatch, args, tmp_path)  # save_sensitive_data=False
+
+    from chunkhound.api.cli.commands import search as search_module
+
+    monkeypatch.setattr(search_module, "search_command", _ok_command)
+
+    await cli_main.async_main()
+
+    events = _read_events(buffer_dir)
+    assert events[0]["action"] == {"query": None}
 
 
 @pytest.mark.asyncio

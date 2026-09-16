@@ -227,11 +227,16 @@ async def handle_tool_call(
     Raises:
         MCPError: On tool execution failure (caught and formatted as error response)
     """
+    save_sensitive_data = getattr(
+        getattr(config, "analytics", None), "save_sensitive_data", False
+    )
     handle = ch_analytics.start_command(
         analytics_recorder,
         tool_name,
         "mcp",
-        _analytics_action_fields(tool_name, arguments),
+        ch_analytics.redact_action_fields(
+            _analytics_action_fields(tool_name, arguments), save_sensitive_data
+        ),
     )
     try:
         # Lazy import at runtime to construct MCP content objects without

@@ -289,12 +289,17 @@ async def async_main() -> None:
     analytics_recorder = ch_analytics.build_recorder(
         getattr(config, "analytics", None), config.target_dir or Path.cwd()
     )
+    _save_sensitive_data = getattr(
+        getattr(config, "analytics", None), "save_sensitive_data", False
+    )
     analytics_handle = (
         ch_analytics.start_command(
             analytics_recorder,
             args.command,
             "cli",
-            _analytics_action_fields(args.command, args),
+            ch_analytics.redact_action_fields(
+                _analytics_action_fields(args.command, args), _save_sensitive_data
+            ),
         )
         if args.command in _ANALYTICS_WRAPPED_COMMANDS
         else 0

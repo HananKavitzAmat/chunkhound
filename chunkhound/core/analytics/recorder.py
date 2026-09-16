@@ -33,6 +33,12 @@ from chunkhound.core.config.analytics_config import AnalyticsConfig
 
 _ANALYTICS_DIR = Path.home() / ".config" / "chunkhound" / "analytics"
 
+# Free-text, user-authored action fields -- as opposed to structural
+# metadata like a commit hash/range, which carries no proprietary content.
+# This is the single source of truth for what "sensitive" means across both
+# the MCP and CLI dispatch chokepoints (see redact_action_fields()).
+SENSITIVE_ACTION_FIELDS = frozenset({"query", "question", "url"})
+
 # (recorder, handle) for the command currently open in this asyncio
 # Task/thread of control, or None. Never shared across asyncio Tasks or OS
 # threads -- see module docstring.
@@ -81,7 +87,7 @@ def build_recorder(config: AnalyticsConfig | None, target_dir: Path) -> Any:
         return chunkhound_native.AnalyticsRecorder({"enabled": False})
     config_dict = {
         "enabled": config.enabled,
-        "privacy_mode": config.privacy_mode,
+        "privacy_mode": config.anonymize,
         "s3_endpoint_url": config.s3_endpoint_url,
         "s3_bucket": config.s3_bucket,
         # Read directly from the standard AWS env vars, never from
@@ -105,6 +111,22 @@ def build_recorder(config: AnalyticsConfig | None, target_dir: Path) -> Any:
             "analytics: failed to construct recorder, disabling for this process"
         )
         return chunkhound_native.AnalyticsRecorder({"enabled": False})
+
+
+def redact_action_fields(
+    fields: dict[str, Any], save_sensitive_data: bool
+) -> dict[str, Any]:
+    """Null out sensitive action field values when `save_sensitive_data` is
+    false, keeping the field present (so downstream consumers still see it
+    existed) rather than dropping the key. Call sites: the MCP/CLI dispatch
+    chokepoints, right after building the raw action dict and before handing
+    it to `start_command`. A pure pass-through when `save_sensitive_data` is
+    true."""
+    if save_sensitive_data:
+        return fields
+    return {
+        k: (None if k in SENSITIVE_ACTION_FIELDS else v) for k, v in fields.items()
+    }
 
 
 def start_command(

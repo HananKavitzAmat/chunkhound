@@ -19,6 +19,7 @@ from chunkhound.core.analytics.recorder import (
     get_current,
     record_internal_error,
     record_provider_call,
+    redact_action_fields,
     shutdown,
     start_command,
     update_action,
@@ -225,3 +226,22 @@ def test_shutdown_flushes_the_buffer(
 
     pending = list(buffer_dir.glob("*.pending-*"))
     assert len(pending) == 1
+
+
+def test_redact_action_fields_nulls_only_the_sensitive_keys() -> None:
+    fields = {
+        "query": "explain indexing",
+        "commit_range": "HEAD~5..HEAD",
+        "commit_hash": "abc123",
+    }
+    assert redact_action_fields(fields, save_sensitive_data=False) == {
+        "query": None,
+        "commit_range": "HEAD~5..HEAD",
+        "commit_hash": "abc123",
+    }
+
+
+def test_redact_action_fields_is_a_pass_through_when_enabled() -> None:
+    fields = {"query": "explain indexing", "commit_range": "HEAD~5..HEAD"}
+    result = redact_action_fields(fields, save_sensitive_data=True)
+    assert result is fields

@@ -10,6 +10,7 @@ import asyncio
 import glob
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -56,7 +57,7 @@ def _register_test_tools():
     TOOL_REGISTRY.pop("_analytics_test_fail", None)
 
 
-async def _call(tool_name: str, arguments: dict, recorder) -> None:
+async def _call(tool_name: str, arguments: dict, recorder, config=None) -> None:
     initialization_complete = asyncio.Event()
     initialization_complete.set()
     await handle_tool_call(
@@ -66,6 +67,7 @@ async def _call(tool_name: str, arguments: dict, recorder) -> None:
         embedding_manager=None,
         initialization_complete=initialization_complete,
         analytics_recorder=recorder,
+        config=config,
     )
 
 
@@ -87,11 +89,39 @@ async def test_successful_tool_call_records_one_command_summary(recorder) -> Non
 async def test_search_action_fields_extract_the_query(recorder) -> None:
     rec, buffer_dir = recorder
     # "search" is a real registered tool name, so its action-field mapping
-    # (query only, for a non-git-scoped call) applies.
-    await _call("search", {"query": "explain indexing", "unrelated": "drop me"}, rec)
+    # (query only, for a non-git-scoped call) applies. save_sensitive_data
+    # is explicitly opted in here since this test is about field selection,
+    # not redaction -- see the dedicated redaction tests below.
+    config = SimpleNamespace(analytics=SimpleNamespace(save_sensitive_data=True))
+    await _call(
+        "search", {"query": "explain indexing", "unrelated": "drop me"}, rec, config
+    )
 
     events = _read_events(buffer_dir)
     assert events[-1]["action"] == {"query": "explain indexing"}
+
+
+@pytest.mark.asyncio
+async def test_sensitive_action_fields_are_redacted_by_default(recorder) -> None:
+    # No config passed -- save_sensitive_data defaults to False.
+    rec, buffer_dir = recorder
+    await _call("search", {"query": "explain indexing"}, rec)
+
+    events = _read_events(buffer_dir)
+    assert events[-1]["action"] == {"query": None}
+
+
+@pytest.mark.asyncio
+async def test_non_sensitive_action_fields_survive_redaction(recorder) -> None:
+    rec, buffer_dir = recorder
+    await _call(
+        "search",
+        {"query": "explain indexing", "commit_hash": "abc123"},
+        rec,
+    )
+
+    events = _read_events(buffer_dir)
+    assert events[-1]["action"] == {"query": None, "commit_hash": "abc123"}
 
 
 @pytest.mark.asyncio

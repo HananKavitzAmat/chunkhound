@@ -1,5 +1,7 @@
 """Unit tests for analytics configuration parsing."""
 
+from pathlib import Path
+
 import pytest
 
 from chunkhound.core.config.analytics_config import AnalyticsConfig
@@ -11,25 +13,40 @@ def test_disabled_by_default() -> None:
     assert AnalyticsConfig().enabled is False
 
 
-def test_privacy_mode_defaults_to_full() -> None:
-    assert AnalyticsConfig().privacy_mode == "full"
+def test_anonymize_defaults_to_full() -> None:
+    assert AnalyticsConfig().anonymize == "full"
 
 
-def test_privacy_mode_rejects_unknown_values() -> None:
+def test_anonymize_rejects_unknown_values() -> None:
     with pytest.raises(ValueError):
-        AnalyticsConfig(privacy_mode="incognito")
+        AnalyticsConfig(anonymize="incognito")
 
 
-def test_load_from_env_parses_enabled_and_privacy_mode(
+def test_save_sensitive_data_defaults_to_false() -> None:
+    """Redact action content by default -- admins must explicitly opt in."""
+    assert AnalyticsConfig().save_sensitive_data is False
+
+
+def test_load_from_env_parses_enabled_and_anonymize(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("CHUNKHOUND_ANALYTICS__ENABLED", "true")
-    monkeypatch.setenv("CHUNKHOUND_ANALYTICS__PRIVACY_MODE", "hashed")
+    monkeypatch.setenv("CHUNKHOUND_ANALYTICS__ANONYMIZE", "hashed")
 
     config = AnalyticsConfig.load_from_env()
 
     assert config["enabled"] is True
-    assert config["privacy_mode"] == "hashed"
+    assert config["anonymize"] == "hashed"
+
+
+def test_load_from_env_parses_save_sensitive_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CHUNKHOUND_ANALYTICS__SAVE_SENSITIVE_DATA", "true")
+
+    config = AnalyticsConfig.load_from_env()
+
+    assert config["save_sensitive_data"] is True
 
 
 def test_load_from_env_parses_s3_and_flush_settings(
@@ -60,19 +77,23 @@ def test_load_from_env_ignores_malformed_integers(
     assert "flush_interval_seconds" not in config
 
 
-def test_config_composes_analytics_with_defaults() -> None:
+def test_config_composes_analytics_with_defaults(tmp_path: Path) -> None:
     """Config() must always carry a usable, disabled-by-default AnalyticsConfig,
-    mirroring every other sub-config's default_factory wiring."""
-    config = Config()
+    mirroring every other sub-config's default_factory wiring. Uses an empty
+    tmp_path as target_dir so this doesn't pick up this repo's own
+    .chunkhound.json (which may set its own analytics values)."""
+    config = Config(target_dir=tmp_path)
     assert isinstance(config.analytics, AnalyticsConfig)
     assert config.analytics.enabled is False
 
 
-def test_config_picks_up_analytics_env_vars(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_config_picks_up_analytics_env_vars(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     monkeypatch.setenv("CHUNKHOUND_ANALYTICS__ENABLED", "true")
-    monkeypatch.setenv("CHUNKHOUND_ANALYTICS__PRIVACY_MODE", "anonymous")
+    monkeypatch.setenv("CHUNKHOUND_ANALYTICS__ANONYMIZE", "anonymous")
 
-    config = Config()
+    config = Config(target_dir=tmp_path)
 
     assert config.analytics.enabled is True
-    assert config.analytics.privacy_mode == "anonymous"
+    assert config.analytics.anonymize == "anonymous"
