@@ -19,7 +19,17 @@ ignore     = "0.4"
 # by RUSTFLAGS and scripts/copy_duckdb_runtime.py. The per-platform build
 # recipe lives in the Makefile dev/dev-release targets and
 # .github/actions/build-rust-extension/action.yml.
-duckdb     = { version = "1" }
+# Pinned to 1.10504.0 (DuckDB core v1.5.4): 1.10505.0 (DuckDB core v1.5.5)
+# changed storage_manager.cpp's checkpoint-failure handling to invalidate a
+# non-initial attached database on error -- that invalidation path itself
+# throws AttachedDatabase::GetStorageManager()'s "Internal system catalog
+# does not have storage" against the system catalog, masking the real
+# checkpoint error. Trips deterministically in
+# run_attach_copy_compaction()'s DETACH src; CHECKPOINT sequence
+# (db/duckdb_backend/compaction.rs) on macOS CI. Unpin only after that's
+# fixed upstream or compaction's detach/checkpoint sequencing is reworked
+# to avoid it.
+duckdb     = { version = "=1.10504.0" }
 log        = "0.4"
 pyo3-log   = "0.11"
 rand       = "0.8"
