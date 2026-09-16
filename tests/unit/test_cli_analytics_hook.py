@@ -116,7 +116,9 @@ async def test_research_action_fields_extract_the_query(
     # Regression guard: _ANALYTICS_ACTION_ARGS["research"] used to be keyed
     # on "question", but the research subparser's real positional arg dest
     # is `query` -- that mapping silently recorded nothing.
-    args = SimpleNamespace(command="research", verbose=False, query="how does auth work?")
+    args = SimpleNamespace(
+        command="research", verbose=False, query="how does auth work?"
+    )
     buffer_dir = _patch_common(monkeypatch, args, tmp_path, save_sensitive_data=True)
 
     from chunkhound.api.cli.commands import research as research_module
@@ -133,7 +135,9 @@ async def test_research_action_fields_extract_the_query(
 async def test_research_query_is_redacted_by_default(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    args = SimpleNamespace(command="research", verbose=False, query="how does auth work?")
+    args = SimpleNamespace(
+        command="research", verbose=False, query="how does auth work?"
+    )
     buffer_dir = _patch_common(monkeypatch, args, tmp_path)  # save_sensitive_data=False
 
     from chunkhound.api.cli.commands import research as research_module

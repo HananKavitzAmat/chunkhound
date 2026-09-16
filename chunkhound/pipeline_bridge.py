@@ -279,8 +279,9 @@ def embed_batch_callback(
     coordinator's embedding config for this run — not whatever happens to
     sit on the process-wide registry. ``cache`` must be *this run's own*
     ``_EmbedThreadCache`` — see its docstring for why it can't be a shared
-    module-level cache. ``analytics`` is the (recorder, handle) resolved
-    from the *calling* thread's context before this run started -- this
+    module-level cache. ``analytics`` is the (recorder, handle,
+    save_sensitive_data) resolved from the *calling* thread's context
+    before this run started -- this
     rayon thread's own `contextvars` context is otherwise empty (rayon
     threads don't inherit it the way asyncio Tasks do), which is exactly
     the gap this explicit binding closes. Only used for the Python-callback

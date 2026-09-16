@@ -228,7 +228,7 @@ def test_bind_current_makes_the_binding_visible_to_record_provider_call(
 
 
 def test_bind_current_none_clears_any_stale_binding() -> None:
-    _current.set(("stale-recorder", 999))
+    _current.set(("stale-recorder", 999, False))
     bind_current(None, 0)
     assert get_current() is None
 
