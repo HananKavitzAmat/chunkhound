@@ -142,8 +142,22 @@ impl AnalyticsRecorder {
             return;
         };
         let event = build_event(inner, &state, success);
+        // Deliberately does NOT call maybe_flush()/flush_active() here: that
+        // path can do a synchronous, blocking HTTPS PUT to S3 (upload_and_
+        // cleanup), and this method holds the GIL for its entire duration
+        // with no py.allow_threads() escape hatch (unlike shutdown(), which
+        // explicitly releases the GIL for exactly this reason). Flushing
+        // here would stall the calling host command -- and, on a
+        // single-threaded asyncio MCP server, every *other* concurrent tool
+        // call too -- for as long as the S3/MinIO endpoint takes to respond
+        // (up to the client's 30s timeout), directly violating this
+        // module's own "must never disrupt a host command" invariant (see
+        // mod.rs). The background thread spawned by spawn_flush_thread()
+        // polls maybe_flush(false) every second on its own OS thread with
+        // no GIL involved at all, so a batch-size- or interval-triggered
+        // flush still happens -- just within ~1s instead of inline here,
+        // which is a negligible delay for an hours-scale-default feature.
         inner.record_event(event);
-        inner.maybe_flush(false);
     }
 
     /// Best-effort final flush, bounded by `timeout_ms` so a slow/unreachable
@@ -677,6 +691,55 @@ mod tests {
         assert_eq!(buffer.lines, 2);
         let contents = fs::read_to_string(&buffer.active_path).unwrap();
         assert_eq!(contents.lines().count(), 2);
+    }
+
+    #[test]
+    fn end_command_never_flushes_inline_even_when_batch_threshold_is_hit() {
+        // Regression guard for the Critical GIL-blocking bug: end_command()
+        // must not call maybe_flush()/flush_active() itself, since that path
+        // can do a synchronous S3 PUT while the caller (a pymethod) still
+        // holds the GIL. This replicates end_command()'s exact body --
+        // commands.end() -> build_event() -> record_event(), nothing else --
+        // against a threshold that would trigger an immediate flush if
+        // maybe_flush() were (still, or ever again) called from here.
+        let dir = tempdir().unwrap();
+        let mut raw = raw_config(dir.path());
+        raw.flush_batch_size = 1;
+        let inner = build_inner_from_raw(raw).unwrap();
+
+        let handle = inner
+            .commands
+            .start("search".to_string(), "mcp".to_string(), json!({}));
+        let state = inner.commands.end(handle).unwrap();
+        let event = build_event(&inner, &state, true);
+        inner.record_event(event);
+
+        // No rotation/upload happened: the active buffer file is still the
+        // active file, and no ".pending-*" file was ever created.
+        let buffer = inner.buffer.lock().unwrap();
+        assert_eq!(buffer.lines, 1);
+        assert!(buffer.active_path.exists());
+        drop(buffer);
+        // Just the active buffer file -- "full" privacy mode never touches
+        // the salt file, and nothing else has been created yet.
+        assert_eq!(count_buffer_files(dir.path()), 1);
+
+        // The background flush thread's own trigger still works against the
+        // same state -- this isn't a dead threshold, it's just not called
+        // from end_command() anymore.
+        inner.maybe_flush(false);
+        assert_eq!(
+            fs::read_dir(dir.path())
+                .unwrap()
+                .filter(|e| e
+                    .as_ref()
+                    .unwrap()
+                    .path()
+                    .to_string_lossy()
+                    .contains(".pending-"))
+                .count(),
+            1
+        );
     }
 
     #[test]
