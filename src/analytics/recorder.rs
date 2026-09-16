@@ -24,6 +24,7 @@ struct Config {
     flush_interval: Duration,
     flush_batch_size: usize,
     max_buffer_bytes: u64,
+    max_upload_retries: usize,
     buffer_dir: PathBuf,
     s3_target: Option<S3Target>,
 }
@@ -65,9 +66,11 @@ impl AnalyticsRecorder {
     /// `config` keys: enabled (bool), privacy_mode (str), s3_endpoint_url
     /// (str|None), s3_bucket (str|None), s3_access_key (str|None),
     /// s3_secret_key (str|None), flush_interval_seconds (int),
-    /// flush_batch_size (int), buffer_dir (str), salt_path (str),
-    /// repository_dir (str), os_username (str), chunkhound_version (str —
-    /// pass `chunkhound.__version__`, not this crate's own version).
+    /// flush_batch_size (int), max_upload_retries (int — failed-upload
+    /// attempts before a buffered file is dropped, floored at 1), buffer_dir
+    /// (str), salt_path (str), repository_dir (str), os_username (str),
+    /// chunkhound_version (str — pass `chunkhound.__version__`, not this
+    /// crate's own version).
     #[new]
     fn new(py: Python<'_>, config: &Bound<'_, PyDict>) -> PyResult<Self> {
         // Extracting from the PyDict needs the GIL, but everything
@@ -243,6 +246,7 @@ struct RawConfig {
     flush_interval_seconds: u64,
     flush_batch_size: usize,
     max_buffer_bytes: u64,
+    max_upload_retries: usize,
     buffer_dir: PathBuf,
     salt_path: PathBuf,
     repository_dir: PathBuf,
@@ -265,6 +269,7 @@ impl Default for RawConfig {
             flush_interval_seconds: 21600,
             flush_batch_size: 500,
             max_buffer_bytes: 10 * 1024 * 1024,
+            max_upload_retries: 10,
             buffer_dir: PathBuf::from("."),
             salt_path: PathBuf::from("salt"),
             repository_dir: PathBuf::from("."),
@@ -290,6 +295,7 @@ fn extract_raw_config(config: &Bound<'_, PyDict>) -> Option<RawConfig> {
         s3_secret_key: get(config, "s3_secret_key"),
         flush_interval_seconds: get(config, "flush_interval_seconds").unwrap_or(21600),
         flush_batch_size: get(config, "flush_batch_size").unwrap_or(500),
+        max_upload_retries: get(config, "max_upload_retries").unwrap_or(10),
         buffer_dir: PathBuf::from(buffer_dir),
         salt_path: PathBuf::from(salt_path),
         repository_dir: PathBuf::from(
@@ -354,6 +360,7 @@ fn build_inner_from_raw(raw: RawConfig) -> Option<Inner> {
             flush_interval: Duration::from_secs(raw.flush_interval_seconds),
             flush_batch_size: raw.flush_batch_size,
             max_buffer_bytes: raw.max_buffer_bytes,
+            max_upload_retries: raw.max_upload_retries.max(1),
             buffer_dir: raw.buffer_dir,
             s3_target,
         },
@@ -520,7 +527,7 @@ impl Inner {
         let (old_active, rotated_path) = {
             let mut buffer = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
             let old_active = buffer.active_path.clone();
-            let rotated_path = rotated_path_for(&old_active);
+            let rotated_path = rotated_path_for(&old_active, 1);
             buffer.active_path = new_active_buffer_path(&self.config.buffer_dir);
             buffer.lines = 0;
             buffer.bytes = 0;
@@ -579,7 +586,7 @@ impl Inner {
             if is_pending {
                 self.upload_and_cleanup(&path);
             } else {
-                let rotated = rotated_path_for(&path);
+                let rotated = rotated_path_for(&path, 1);
                 match fs::rename(&path, &rotated) {
                     Ok(()) => self.upload_and_cleanup(&rotated),
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -595,7 +602,9 @@ impl Inner {
         let Some(target) = &self.config.s3_target else {
             // No S3 configured: leave the rotated file on disk. It's
             // retried on every flush/sweep cycle, which is a harmless no-op
-            // until a target is configured.
+            // until a target is configured -- deliberately not subject to
+            // the retry cap below, since there's no misconfiguration to
+            // recover from here, just an intentional local-only mode.
             return;
         };
         let data = match fs::read(path) {
@@ -609,6 +618,9 @@ impl Inner {
             let _ = fs::remove_file(path);
             return;
         }
+        // Computed before the move into put_object() below -- only actually
+        // used if this attempt fails and turns out to be the last one.
+        let event_count = data.iter().filter(|&&b| b == b'\n').count();
         let key = self.object_key();
         match target.put_object(&self.http, &key, data) {
             Ok(()) => {
@@ -616,7 +628,28 @@ impl Inner {
                     log::warn!("analytics: uploaded but failed to remove local buffer: {e}");
                 }
             }
-            Err(e) => log::warn!("analytics: upload failed, will retry next cycle: {e}"),
+            Err(e) => {
+                let attempt = pending_attempt(path);
+                if attempt >= self.config.max_upload_retries {
+                    log::warn!(
+                        "analytics: dropping buffer file after {attempt} failed upload \
+                         attempt(s), {event_count} event(s) lost ({}): {e}",
+                        path.display()
+                    );
+                    let _ = fs::remove_file(path);
+                } else {
+                    log::warn!(
+                        "analytics: upload failed (attempt {attempt} of {}), will retry: {e}",
+                        self.config.max_upload_retries
+                    );
+                    let bumped = rotated_path_for(path, attempt + 1);
+                    if let Err(rename_err) = fs::rename(path, &bumped) {
+                        log::warn!(
+                            "analytics: failed to bump retry-attempt filename: {rename_err}"
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -641,12 +674,44 @@ impl Inner {
     }
 }
 
-fn rotated_path_for(active_path: &Path) -> PathBuf {
+/// Strips an existing `.pending-attemptN-{hex}` suffix, if present, so the
+/// same helper can both rotate a fresh active file (`attempt = 1`) and
+/// re-rotate an already-pending file onto its next attempt number.
+fn base_before_pending(path: &Path) -> PathBuf {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return path.to_path_buf();
+    };
+    match name.find(".pending-") {
+        Some(idx) => path.with_file_name(&name[..idx]),
+        None => path.to_path_buf(),
+    }
+}
+
+/// The failed-upload attempt count encoded in a `.pending-attemptN-{hex}`
+/// filename, read back out so a retry surviving a flush/sweep cycle (or a
+/// crash + restart -- `sweep_orphans()` finds the same file) picks up where
+/// it left off instead of resetting to 0. A file with no attempt marker
+/// (e.g. a legacy orphan from before this scheme existed) is treated as
+/// attempt 1, the same as a file rotated for the first time.
+fn pending_attempt(path: &Path) -> usize {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return 1;
+    };
+    let Some(idx) = name.find(".pending-attempt") else {
+        return 1;
+    };
+    let rest = &name[idx + ".pending-attempt".len()..];
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse().unwrap_or(1)
+}
+
+fn rotated_path_for(path: &Path, attempt: usize) -> PathBuf {
+    let base = base_before_pending(path);
     let mut suffix = [0u8; 4];
     rand::thread_rng().fill_bytes(&mut suffix);
     let suffix_hex: String = suffix.iter().map(|b| format!("{b:02x}")).collect();
-    let mut rotated = active_path.as_os_str().to_owned();
-    rotated.push(format!(".pending-{suffix_hex}"));
+    let mut rotated = base.into_os_string();
+    rotated.push(format!(".pending-attempt{attempt}-{suffix_hex}"));
     PathBuf::from(rotated)
 }
 
@@ -824,6 +889,112 @@ mod tests {
             1,
             "a failed upload must leave the rotated file on disk for the next retry"
         );
+        // The very first failure immediately bumps attempt 1 -> 2 (see
+        // upload_and_cleanup()'s retry-cap branch) -- attempt numbering
+        // itself is covered in detail by
+        // failed_upload_bumps_the_attempt_number_across_retries below.
+        assert!(pending[0]
+            .file_name()
+            .to_string_lossy()
+            .contains(".pending-attempt2-"));
+    }
+
+    #[test]
+    fn failed_upload_bumps_the_attempt_number_across_retries() {
+        // A file that fails upload, survives one retry cycle (attempt 1 ->
+        // 2), and is picked back up by the orphan sweep (standing in for a
+        // later flush tick or a crash+restart) must carry its attempt count
+        // forward rather than resetting to 1.
+        let dir = tempdir().unwrap();
+        let server = httpmock::MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(httpmock::Method::PUT);
+            then.status(500);
+        });
+        let mut raw = raw_config(dir.path());
+        raw.s3_endpoint_url = Some(server.url(""));
+        raw.s3_bucket = Some("analytics-bucket".to_string());
+        raw.s3_access_key = Some("key".to_string());
+        raw.s3_secret_key = Some("secret".to_string());
+        raw.max_upload_retries = 5;
+        raw.flush_interval_seconds = 0; // idle_threshold = 0: sweep picks it up immediately
+        let inner = build_inner_from_raw(raw).unwrap();
+
+        inner.record_event(json!({"type": "command_summary", "n": 1}));
+        inner.flush_active(); // attempt 1 fails, renamed to attempt2
+
+        let after_first_failure: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".pending-"))
+            .collect();
+        assert_eq!(after_first_failure.len(), 1);
+        assert!(after_first_failure[0]
+            .file_name()
+            .to_string_lossy()
+            .contains(".pending-attempt2-"));
+
+        inner.sweep_orphans(); // attempt 2 fails, renamed to attempt3
+
+        mock.assert_hits(2);
+        let after_second_failure: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".pending-"))
+            .collect();
+        assert_eq!(after_second_failure.len(), 1);
+        assert!(after_second_failure[0]
+            .file_name()
+            .to_string_lossy()
+            .contains(".pending-attempt3-"));
+    }
+
+    #[test]
+    fn upload_failures_drop_the_file_once_max_retries_is_exceeded() {
+        let dir = tempdir().unwrap();
+        let server = httpmock::MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(httpmock::Method::PUT);
+            then.status(500);
+        });
+        let mut raw = raw_config(dir.path());
+        raw.s3_endpoint_url = Some(server.url(""));
+        raw.s3_bucket = Some("analytics-bucket".to_string());
+        raw.s3_access_key = Some("key".to_string());
+        raw.s3_secret_key = Some("secret".to_string());
+        raw.max_upload_retries = 2;
+        raw.flush_interval_seconds = 0;
+        let inner = build_inner_from_raw(raw).unwrap();
+
+        inner.record_event(json!({"type": "command_summary", "n": 1}));
+        inner.flush_active(); // attempt 1 fails -> renamed to attempt2
+        inner.sweep_orphans(); // attempt 2 fails, == max_upload_retries -> dropped
+
+        mock.assert_hits(2);
+        assert_eq!(
+            count_buffer_files(dir.path()),
+            0,
+            "a buffer file must be dropped, not retried forever, once it exceeds max_upload_retries"
+        );
+    }
+
+    #[test]
+    fn pending_attempt_reads_the_filename_and_defaults_to_one() {
+        assert_eq!(
+            pending_attempt(Path::new("buffer-1-2.jsonl.pending-attempt3-ab12cd34")),
+            3
+        );
+        assert_eq!(
+            pending_attempt(Path::new("buffer-1-2.jsonl.pending-attempt1-ab12cd34")),
+            1
+        );
+        // No attempt marker at all (e.g. a legacy orphan) defaults to 1,
+        // same as a file rotated for the first time.
+        assert_eq!(
+            pending_attempt(Path::new("buffer-1-2.jsonl.pending-deadbeef")),
+            1
+        );
+        assert_eq!(pending_attempt(Path::new("buffer-1-2.jsonl")), 1);
     }
 
     #[test]

@@ -7,10 +7,11 @@ handles config precedence (CLI/env/file/defaults), matching every other
 sub-config here.
 
 Deliberately excluded from this model: the S3 write credential. It is read
-directly from the standard AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY
-environment variables (see chunkhound/core/analytics/recorder.py), never as
-a pydantic field here, so it can never end up persisted in a
-.chunkhound.json file even by accident.
+directly from the CHUNKHOUND_AWS_ACCESS_KEY_ID/CHUNKHOUND_AWS_SECRET_ACCESS_KEY
+environment variables (see chunkhound/core/analytics/recorder.py) -- not the
+standard AWS_* names, so this never silently picks up ambient AWS
+credentials set for an unrelated tool -- never as a pydantic field here, so
+it can never end up persisted in a .chunkhound.json file even by accident.
 """
 
 import os
@@ -74,6 +75,15 @@ class AnalyticsConfig(BaseModel):
         description="Safety cap: early flush if buffered lines exceed this",
     )
 
+    max_upload_retries: int = Field(
+        default=10,
+        ge=1,
+        description=(
+            "Failed-upload attempts for a buffered file before it is "
+            "dropped (with a logged warning) instead of retried forever"
+        ),
+    )
+
     @classmethod
     def load_from_env(cls) -> dict[str, Any]:
         """Load analytics config from environment variables."""
@@ -107,6 +117,12 @@ class AnalyticsConfig(BaseModel):
         if flush_batch := os.getenv("CHUNKHOUND_ANALYTICS__FLUSH_BATCH_SIZE"):
             try:
                 config["flush_batch_size"] = int(flush_batch)
+            except ValueError:
+                pass
+
+        if max_retries := os.getenv("CHUNKHOUND_ANALYTICS__MAX_UPLOAD_RETRIES"):
+            try:
+                config["max_upload_retries"] = int(max_retries)
             except ValueError:
                 pass
 

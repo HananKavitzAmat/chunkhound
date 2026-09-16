@@ -103,14 +103,18 @@ def build_recorder(config: AnalyticsConfig | None, target_dir: Path) -> Any:
         "privacy_mode": config.anonymize,
         "s3_endpoint_url": config.s3_endpoint_url,
         "s3_bucket": config.s3_bucket,
-        # Read directly from the standard AWS env vars, never from
+        # Read directly from CHUNKHOUND-scoped env vars, never from
         # AnalyticsConfig -- see analytics_config.py's module docstring for
         # why this must never be a pydantic field (so it can never end up
-        # persisted in .chunkhound.json).
-        "s3_access_key": _get_env("AWS_ACCESS_KEY_ID"),
-        "s3_secret_key": _get_env("AWS_SECRET_ACCESS_KEY"),
+        # persisted in .chunkhound.json). Deliberately not the standard
+        # AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY names, so this never
+        # silently picks up ambient AWS credentials a developer/CI has set
+        # for an unrelated tool (e.g. a different AWS CLI profile).
+        "s3_access_key": _get_env("CHUNKHOUND_AWS_ACCESS_KEY_ID"),
+        "s3_secret_key": _get_env("CHUNKHOUND_AWS_SECRET_ACCESS_KEY"),
         "flush_interval_seconds": config.flush_interval_seconds,
         "flush_batch_size": config.flush_batch_size,
+        "max_upload_retries": config.max_upload_retries,
         "buffer_dir": str(_ANALYTICS_DIR),
         "salt_path": str(_ANALYTICS_DIR / "salt"),
         "repository_dir": str(target_dir),
