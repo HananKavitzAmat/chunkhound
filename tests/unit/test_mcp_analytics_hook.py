@@ -52,9 +52,14 @@ def _register_test_tools():
     async def _fail(query: str) -> dict:
         raise KeyError("boom")
 
+    @register_tool(name="_analytics_test_cancel", description="test")
+    async def _cancel(query: str) -> dict:
+        raise asyncio.CancelledError()
+
     yield
     TOOL_REGISTRY.pop("_analytics_test_ok", None)
     TOOL_REGISTRY.pop("_analytics_test_fail", None)
+    TOOL_REGISTRY.pop("_analytics_test_cancel", None)
 
 
 async def _call(tool_name: str, arguments: dict, recorder, config=None) -> None:
@@ -171,6 +176,24 @@ async def test_unknown_tool_still_records_a_failed_command(recorder) -> None:
     assert len(events) == 1
     assert events[0]["success"] is False
     assert events[0]["internal_error_type"] == "ValueError"
+
+
+@pytest.mark.asyncio
+async def test_cancelled_tool_call_still_closes_the_handle(recorder) -> None:
+    # Regression guard: asyncio.CancelledError is a BaseException, not an
+    # Exception -- a naive `except Exception` would let it skip
+    # end_command() entirely, leaking an open handle in the long-running
+    # MCP server process for every client-cancelled call. Must also
+    # propagate (not be swallowed) so real cancellation semantics survive.
+    rec, buffer_dir = recorder
+    with pytest.raises(asyncio.CancelledError):
+        await _call("_analytics_test_cancel", {"query": "x"}, rec)
+
+    events = _read_events(buffer_dir)
+    assert len(events) == 1
+    event = events[0]
+    assert event["success"] is False
+    assert event["internal_error_type"] == "CancelledError"
 
 
 @pytest.mark.asyncio

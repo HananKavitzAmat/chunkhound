@@ -90,11 +90,18 @@ def bind_current(
 def build_recorder(config: AnalyticsConfig | None, target_dir: Path) -> Any:
     """Construct the process's AnalyticsRecorder from validated config.
 
-    Always returns a usable recorder object, even on failure -- a disabled
-    recorder (every method a no-op) is the safe fallback so a bad analytics
-    config can never prevent the host command from starting. `config=None`
-    (e.g. a caller/test double whose Config-like object has no `analytics`
-    attribute at all) is treated the same as a disabled config.
+    No try/except here: `chunkhound_native.AnalyticsRecorder`'s constructor
+    is deliberately built to never raise -- every actually-fallible
+    operation it performs (the git shell-out in `resolve_repository_name`,
+    `S3Target::new`'s config validation, `fs::create_dir_all`, building the
+    `reqwest` client, salt-file I/O) is caught and gracefully degraded to a
+    disabled/no-op state *inside* the Rust constructor itself (see
+    `src/analytics/recorder.rs`'s `build_inner_from_raw`), so a bad
+    analytics environment can never prevent the host command from starting.
+    A Python-side try/except here would just be dead code shadowing that
+    guarantee. `config=None` (e.g. a caller/test double whose Config-like
+    object has no `analytics` attribute at all) is treated the same as a
+    disabled config.
     """
     if config is None:
         return chunkhound_native.AnalyticsRecorder({"enabled": False})
@@ -121,13 +128,7 @@ def build_recorder(config: AnalyticsConfig | None, target_dir: Path) -> Any:
         "os_username": _get_os_username(),
         "chunkhound_version": __version__,
     }
-    try:
-        return chunkhound_native.AnalyticsRecorder(config_dict)
-    except Exception:
-        logger.opt(exception=True).debug(
-            "analytics: failed to construct recorder, disabling for this process"
-        )
-        return chunkhound_native.AnalyticsRecorder({"enabled": False})
+    return chunkhound_native.AnalyticsRecorder(config_dict)
 
 
 def redact_action_fields(

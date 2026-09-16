@@ -147,7 +147,7 @@ impl AnalyticsRecorder {
         }
     }
 
-    fn end_command(&self, handle: u64, success: bool) {
+    fn end_command(&self, py: Python<'_>, handle: u64, success: bool) {
         let Some(inner) = &self.inner else { return };
         let Some(state) = inner.commands.end(handle) else {
             return;
@@ -155,20 +155,26 @@ impl AnalyticsRecorder {
         let event = build_event(inner, &state, success);
         // Deliberately does NOT call maybe_flush()/flush_active() here: that
         // path can do a synchronous, blocking HTTPS PUT to S3 (upload_and_
-        // cleanup), and this method holds the GIL for its entire duration
-        // with no py.allow_threads() escape hatch (unlike shutdown(), which
-        // explicitly releases the GIL for exactly this reason). Flushing
-        // here would stall the calling host command -- and, on a
-        // single-threaded asyncio MCP server, every *other* concurrent tool
-        // call too -- for as long as the S3/MinIO endpoint takes to respond
-        // (up to the client's 30s timeout), directly violating this
+        // cleanup), which is unbounded by anything shorter than the http
+        // client's 30s timeout -- flushing inline would stall the calling
+        // host command, and on a single-threaded asyncio MCP server every
+        // *other* concurrent tool call too, directly violating this
         // module's own "must never disrupt a host command" invariant (see
         // mod.rs). The background thread spawned by spawn_flush_thread()
         // polls maybe_flush(false) every second on its own OS thread with
         // no GIL involved at all, so a batch-size- or interval-triggered
         // flush still happens -- just within ~1s instead of inline here,
         // which is a negligible delay for an hours-scale-default feature.
-        inner.record_event(event);
+        //
+        // record_event() itself still does a blocking local-disk open+
+        // append (bounded by disk I/O, not network, but still I/O this
+        // pymethod must not do while holding the GIL -- a slow/contended/
+        // network-mounted buffer dir would otherwise stall every other
+        // concurrent tool call the same way an inline S3 PUT would).
+        // Release the GIL for exactly that call, same pattern as
+        // shutdown()/new() above -- `inner`/`event` are owned/Arc-shared
+        // data, no Python objects are touched while the GIL is released.
+        py.allow_threads(|| inner.record_event(event));
     }
 
     /// Best-effort final flush, bounded by `timeout_ms` so a slow/unreachable

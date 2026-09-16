@@ -371,6 +371,27 @@ async def async_main() -> None:
         # as either a success or a failure in analytics.
         logger.info("Interrupted by user")
         sys.exit(0)
+    except SystemExit as e:
+        # Every wrapped command already does its own error handling and
+        # calls sys.exit() directly on failure (see e.g. commands/search.py,
+        # commands/code_mapper.py) -- SystemExit is a BaseException, not an
+        # Exception, so without this clause it would skip the `except
+        # Exception` branch below entirely and leave this command's handle
+        # open (and its event unrecorded) on every one of those paths.
+        #
+        # A 0/None code is treated the same as the KeyboardInterrupt case
+        # above rather than as success: the only such path today is
+        # commands/run.py's own internal KeyboardInterrupt handler, which
+        # exits 0 after an interrupted (not successful) indexing run --
+        # genuine command success never calls sys.exit() itself, it just
+        # returns and falls through to the `end_command(..., True)` call
+        # above. Any other code is a real command-level failure.
+        code = e.code
+        if code is None or (isinstance(code, int) and code == 0):
+            raise
+        ch_analytics.record_internal_error("SystemExit")
+        ch_analytics.end_command(analytics_recorder, analytics_handle, False)
+        raise
     except Exception as e:
         ch_analytics.record_internal_error(type(e).__name__)
         ch_analytics.end_command(analytics_recorder, analytics_handle, False)

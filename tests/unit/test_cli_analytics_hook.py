@@ -171,6 +171,55 @@ async def test_failed_command_records_internal_error_and_exits(
 
 
 @pytest.mark.asyncio
+async def test_command_failing_via_sys_exit_is_recorded_as_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Regression guard: every real command (search.py, code_mapper.py, etc.)
+    # handles its own errors internally and calls sys.exit(N) directly --
+    # it never lets a bare exception propagate to async_main() the way
+    # _failing_command above does. SystemExit is a BaseException, so this
+    # exercises the actual failure path that used to skip `except Exception`
+    # entirely and leave the command's event unrecorded.
+    args = SimpleNamespace(command="search", verbose=False, query="x")
+    buffer_dir = _patch_common(monkeypatch, args, tmp_path)
+
+    from chunkhound.api.cli.commands import search as search_module
+
+    monkeypatch.setattr(search_module, "search_command", _sys_exit_1_command)
+
+    with pytest.raises(SystemExit) as exc_info:
+        await cli_main.async_main()
+    assert exc_info.value.code == 1
+
+    events = _read_events(buffer_dir)
+    assert len(events) == 1
+    assert events[0]["success"] is False
+    assert events[0]["internal_error_type"] == "SystemExit"
+
+
+@pytest.mark.asyncio
+async def test_command_exiting_zero_via_sys_exit_is_left_unrecorded(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # commands/run.py's own internal KeyboardInterrupt handler calls
+    # sys.exit(0) after an interrupted (not successful) indexing run --
+    # this must not be misrecorded as a successful command, matching the
+    # top-level KeyboardInterrupt exemption above.
+    args = SimpleNamespace(command="search", verbose=False, query="x")
+    buffer_dir = _patch_common(monkeypatch, args, tmp_path)
+
+    from chunkhound.api.cli.commands import search as search_module
+
+    monkeypatch.setattr(search_module, "search_command", _sys_exit_0_command)
+
+    with pytest.raises(SystemExit) as exc_info:
+        await cli_main.async_main()
+    assert exc_info.value.code == 0
+
+    assert _read_events(buffer_dir) == []
+
+
+@pytest.mark.asyncio
 async def test_mcp_command_is_not_wrapped_by_the_cli_hook(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -192,3 +241,15 @@ async def _ok_command(args, config) -> None:
 
 async def _failing_command(args, config) -> None:
     raise KeyError("boom")
+
+
+async def _sys_exit_1_command(args, config) -> None:
+    import sys
+
+    sys.exit(1)
+
+
+async def _sys_exit_0_command(args, config) -> None:
+    import sys
+
+    sys.exit(0)

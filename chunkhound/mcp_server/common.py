@@ -298,6 +298,17 @@ async def handle_tool_call(
         ch_analytics.end_command(analytics_recorder, handle, True)
         return [types.TextContent(type="text", text=response_text)]
 
+    except asyncio.CancelledError:
+        # CancelledError is a BaseException, not an Exception -- the MCP
+        # server is long-running (unlike the CLI, where an unclosed handle
+        # just dies with the process), so a client-cancelled tools/call that
+        # skipped end_command() here would leak an open handle for the rest
+        # of the process's life. Must re-raise unchanged so real asyncio
+        # cancellation semantics (e.g. a task group awaiting this task's
+        # actual cancellation) aren't broken by swallowing it.
+        ch_analytics.record_internal_error("CancelledError")
+        ch_analytics.end_command(analytics_recorder, handle, False)
+        raise
     except Exception as e:
         ch_analytics.record_internal_error(type(e).__name__)
         error_response = format_error_response(e, include_traceback=debug_mode)
