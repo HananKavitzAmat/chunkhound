@@ -530,6 +530,20 @@ impl Inner {
     /// (included in the next flush) — never lost, never interleaved with the
     /// upload read.
     fn flush_active(&self) {
+        if self.config.s3_target.is_none() {
+            // No upload target: rotating would just pile up ".pending-*"
+            // files that upload_and_cleanup()'s early return never touches
+            // (see below), growing without bound on a long-running process.
+            // Stay on the active file instead -- record_event()'s
+            // max_buffer_bytes check already bounds its size -- and bump
+            // last_flush so maybe_flush() doesn't re-enter here every second
+            // once the interval elapses.
+            self.buffer
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .last_flush = Instant::now();
+            return;
+        }
         let (old_active, rotated_path) = {
             let mut buffer = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
             let old_active = buffer.active_path.clone();
@@ -606,11 +620,14 @@ impl Inner {
 
     fn upload_and_cleanup(&self, path: &Path) {
         let Some(target) = &self.config.s3_target else {
-            // No S3 configured: leave the rotated file on disk. It's
-            // retried on every flush/sweep cycle, which is a harmless no-op
-            // until a target is configured -- deliberately not subject to
-            // the retry cap below, since there's no misconfiguration to
-            // recover from here, just an intentional local-only mode.
+            // No S3 configured: leave the file on disk. flush_active() no
+            // longer rotates into a fresh pending file on every cycle in
+            // this mode (see its own early return), so this path is now
+            // only reached for a stale orphan left by a crashed prior
+            // process (sweep_orphans) -- a harmless, bounded no-op until a
+            // target is configured, deliberately not subject to the retry
+            // cap below since there's no misconfiguration to recover from
+            // here, just an intentional local-only mode.
             return;
         };
         let data = match fs::read(path) {
@@ -785,8 +802,17 @@ mod tests {
         // against a threshold that would trigger an immediate flush if
         // maybe_flush() were (still, or ever again) called from here.
         let dir = tempdir().unwrap();
+        let server = httpmock::MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(httpmock::Method::PUT);
+            then.status(200);
+        });
         let mut raw = raw_config(dir.path());
         raw.flush_batch_size = 1;
+        raw.s3_endpoint_url = Some(server.url(""));
+        raw.s3_bucket = Some("analytics-bucket".to_string());
+        raw.s3_access_key = Some("key".to_string());
+        raw.s3_secret_key = Some("secret".to_string());
         let inner = build_inner_from_raw(raw).unwrap();
 
         let handle = inner
@@ -808,8 +834,12 @@ mod tests {
 
         // The background flush thread's own trigger still works against the
         // same state -- this isn't a dead threshold, it's just not called
-        // from end_command() anymore.
+        // from end_command() anymore. An S3 target is configured here (unlike
+        // the shared raw_config() default) specifically so this exercises the
+        // rotate-and-upload path -- the no-target/no-rotate behavior has its
+        // own dedicated test in no_s3_target_configured_never_rotates_the_active_file.
         inner.maybe_flush(false);
+        mock.assert();
         assert_eq!(
             fs::read_dir(dir.path())
                 .unwrap()
@@ -820,7 +850,8 @@ mod tests {
                     .to_string_lossy()
                     .contains(".pending-"))
                 .count(),
-            1
+            0,
+            "successful upload removes the rotated pending file"
         );
     }
 
@@ -1004,10 +1035,20 @@ mod tests {
     }
 
     #[test]
-    fn no_s3_target_configured_leaves_rotated_file_as_a_harmless_noop() {
+    fn no_s3_target_configured_never_rotates_the_active_file() {
+        // Regression guard for the unbounded-local-disk bug: with no S3
+        // target, flush_active() must not rotate into a fresh ".pending-*"
+        // file on every cycle -- that would create one new orphaned file
+        // per flush_interval/flush_batch_size tick for the life of a
+        // long-running process. It should stay on the single active file
+        // instead, which record_event()'s own max_buffer_bytes cap bounds.
         let dir = tempdir().unwrap();
         let inner = build_inner_from_raw(raw_config(dir.path())).unwrap();
         inner.record_event(json!({"type": "command_summary", "n": 1}));
+        let active_path_before = inner.buffer.lock().unwrap().active_path.clone();
+
+        inner.flush_active();
+        inner.flush_active();
         inner.flush_active();
 
         let pending_count = fs::read_dir(dir.path())
@@ -1015,7 +1056,20 @@ mod tests {
             .filter_map(|e| e.ok())
             .filter(|e| e.file_name().to_string_lossy().contains(".pending-"))
             .count();
-        assert_eq!(pending_count, 1);
+        assert_eq!(pending_count, 0, "local-only mode must never rotate");
+        let buffer = inner.buffer.lock().unwrap();
+        assert_eq!(
+            buffer.active_path, active_path_before,
+            "active file must be unchanged across repeated flushes"
+        );
+        assert!(buffer.active_path.exists());
+        assert_eq!(
+            fs::read_to_string(&buffer.active_path)
+                .unwrap()
+                .lines()
+                .count(),
+            1
+        );
     }
 
     #[test]
