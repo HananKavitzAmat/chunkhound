@@ -249,13 +249,17 @@ def test_shutdown_flushes_the_buffer(
     handle = start_command(recorder, "search", "cli", {})
     end_command(recorder, handle, True)
 
-    # No S3 endpoint configured, so this is a local-only flush: the rotated
-    # file stays on disk (nothing to upload it to), but shutdown() itself
-    # must still return promptly rather than raising or hanging.
+    # No S3 endpoint configured, so this is a local-only flush: with nothing
+    # to upload to, the buffer stays on the active file rather than rotating
+    # into an orphaned ".pending-*" file (which would never be cleaned up on
+    # a long-running process -- see recorder.rs's flush_active()). shutdown()
+    # itself must still return promptly rather than raising or hanging.
     shutdown(recorder, timeout_ms=2000)
 
     pending = list(buffer_dir.glob("*.pending-*"))
-    assert len(pending) == 1
+    assert len(pending) == 0
+    events = _read_buffer_events(buffer_dir)
+    assert len(events) == 1
 
 
 def test_redact_action_fields_nulls_only_the_sensitive_keys() -> None:
