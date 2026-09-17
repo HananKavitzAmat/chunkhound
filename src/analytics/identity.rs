@@ -7,7 +7,6 @@
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 use std::fs;
-use std::io::Write;
 use std::path::Path;
 
 /// `None` means "no identity in the payload" (`anonymous` mode, or an
@@ -74,6 +73,7 @@ fn load_or_create_salt(path: &Path) -> String {
 
 #[cfg(unix)]
 fn write_salt_file(path: &Path, hex: &str) {
+    use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     let result = fs::OpenOptions::new()
         .write(true)
