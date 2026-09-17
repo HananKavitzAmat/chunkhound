@@ -256,3 +256,125 @@ async def test_voyageai_rerank_sdk_failure_records_a_failed_provider_call(
     assert reranker["calls"] == 1
     assert reranker["fails"] == 1
     assert reranker["error_types"] == {"RuntimeError": 1}
+
+
+@pytest.mark.asyncio
+async def test_voyageai_rerank_http_single_batch_success_records_a_provider_call(
+    open_command,
+) -> None:
+    """`_rerank_via_http`'s single-batch fast path (documents <= batch limit)
+    bypasses `_rerank_via_http`'s multi-batch loop entirely -- must still
+    reach `_rerank_http_batch`'s analytics recording, not just the
+    already-covered SDK path.
+    """
+    from tests.unit.test_voyageai_provider import _make_provider, _mock_http_client
+
+    recorder, handle, buffer_dir = open_command
+    provider = _make_provider(
+        api_key="test-key",
+        base_url="http://localhost:1234",
+        rerank_url="http://localhost:8001/rerank",
+        rerank_format="auto",
+    )
+    mock_client = _mock_http_client({"results": [{"index": 0, "score": 0.9}]})
+
+    with patch(
+        "chunkhound.providers.embeddings.voyageai_provider.httpx.AsyncClient",
+        return_value=mock_client,
+    ):
+        await provider._rerank_via_http("query", ["doc1"], top_k=None)
+    end_command(recorder, handle, True)
+
+    reranker = _read_events(buffer_dir)[-1]["providers"]["reranker"][0]
+    assert reranker["provider"] == "voyageai"
+    assert reranker["calls"] == 1
+    assert reranker["fails"] == 0
+
+
+@pytest.mark.asyncio
+async def test_voyageai_rerank_http_single_batch_failure_records_a_failed_provider_call(
+    open_command,
+) -> None:
+    from tests.unit.test_voyageai_provider import _make_provider
+
+    recorder, handle, buffer_dir = open_command
+    provider = _make_provider(
+        api_key="test-key",
+        base_url="http://localhost:1234",
+        rerank_url="http://localhost:8001/rerank",
+        rerank_format="auto",
+    )
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(side_effect=RuntimeError("connection refused"))
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+
+    with patch(
+        "chunkhound.providers.embeddings.voyageai_provider.httpx.AsyncClient",
+        return_value=mock_client,
+    ):
+        with pytest.raises(Exception):
+            await provider._rerank_via_http("query", ["doc1"], top_k=None)
+    end_command(recorder, handle, False)
+
+    reranker = _read_events(buffer_dir)[-1]["providers"]["reranker"][0]
+    assert reranker["calls"] == 1
+    assert reranker["fails"] == 1
+    assert reranker["error_types"] == {"RuntimeError": 1}
+
+
+@pytest.mark.asyncio
+async def test_openai_rerank_multi_batch_retry_records_one_call_per_attempt(
+    open_command,
+) -> None:
+    """`rerank()`'s multi-batch split loop (documents > batch limit) retries
+    each batch independently via `_rerank_single_batch` -- every attempt,
+    including a failed-then-retried attempt on one batch and an
+    immediately-successful call on the next, must be recorded separately.
+    """
+    from chunkhound.providers.embeddings.openai_provider import OpenAIEmbeddingProvider
+
+    recorder, handle, buffer_dir = open_command
+    provider = OpenAIEmbeddingProvider(
+        api_key="test-key",
+        base_url="http://localhost:8080",
+        model="text-embedding-3-small",
+        rerank_model="test-reranker",
+        rerank_batch_size=1,
+        retry_attempts=2,
+        retry_delay=0.0,
+    )
+    await provider._ensure_client()
+
+    success_response = MagicMock()
+    success_response.status_code = 200
+    success_response.json.return_value = {
+        "results": [{"index": 0, "relevance_score": 0.9}]
+    }
+    success_response.raise_for_status = MagicMock()
+
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(
+        side_effect=[
+            RuntimeError("connection reset"),  # batch 1, attempt 1: retryable
+            success_response,  # batch 1, attempt 2: succeeds
+            success_response,  # batch 2, attempt 1: succeeds
+        ]
+    )
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+
+    with (
+        patch(
+            "chunkhound.providers.embeddings.openai_provider.httpx.AsyncClient",
+            return_value=mock_client,
+        ),
+        patch.object(asyncio, "sleep", AsyncMock()),
+    ):
+        await provider.rerank("query", ["doc1", "doc2"], top_k=None)
+    end_command(recorder, handle, True)
+
+    reranker = _read_events(buffer_dir)[-1]["providers"]["reranker"][0]
+    assert reranker["calls"] == 3
+    assert reranker["fails"] == 1
+    assert reranker["error_types"] == {"RuntimeError": 1}

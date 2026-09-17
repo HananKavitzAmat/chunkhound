@@ -10,6 +10,7 @@ use super::EmbedBatchResult;
 use crate::error::PipelineError;
 use rayon::current_thread_index;
 use reqwest::blocking::Client;
+use serde::Deserialize;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -220,6 +221,21 @@ pub(crate) fn record_embed_attempt(
         },
     };
     analytics.record_provider_call(*handle, call);
+}
+
+/// Tolerate any JSON shape for a response's `usage.total_tokens` field --
+/// missing, `null`, a string, negative, or a float all decode to `None`
+/// rather than failing deserialization of the surrounding response struct.
+/// A malformed token count must never discard an otherwise-valid batch of
+/// embedding vectors just because analytics couldn't parse the usage field.
+/// Shared by both providers' `*Usage` structs via `#[serde(deserialize_with
+/// = "...")]`, per this module's own precedent (see `record_embed_attempt`
+/// above).
+pub(crate) fn lenient_total_tokens<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(serde_json::Value::deserialize(deserializer)?.as_u64())
 }
 
 // ── Retry wrapper ───────────────────────────────────────────────────────────

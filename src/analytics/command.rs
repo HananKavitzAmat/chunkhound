@@ -15,8 +15,13 @@ pub(crate) struct ProviderStats {
     pub calls: u64,
     pub fails: u64,
     pub error_types: HashMap<String, u64>,
-    pub input_tokens: u64,
-    pub output_tokens: u64,
+    /// `None` until the first call reports a token count; stays `None` if no
+    /// call ever does (e.g. reranker calls never report tokens at all, and
+    /// embedding calls never report `output_tokens`) so the serialized event
+    /// emits `null` rather than a misleading `0`. See wiki's `providers[]`
+    /// schema: these are `integer | null`, not always-present integers.
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
 }
 
 /// Key: (kind, provider, model) e.g. ("embedding", "openai", "text-embedding-3-small").
@@ -72,10 +77,10 @@ impl CommandState {
         stats.calls += 1;
         if call.success {
             if let Some(t) = call.input_tokens {
-                stats.input_tokens += t;
+                stats.input_tokens = Some(stats.input_tokens.unwrap_or(0) + t);
             }
             if let Some(t) = call.output_tokens {
-                stats.output_tokens += t;
+                stats.output_tokens = Some(stats.output_tokens.unwrap_or(0) + t);
             }
         } else {
             stats.fails += 1;

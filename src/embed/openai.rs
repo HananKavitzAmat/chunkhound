@@ -81,7 +81,7 @@ struct OpenAiEmbedding {
 
 #[derive(Deserialize)]
 struct OpenAiUsage {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "super::common::lenient_total_tokens")]
     total_tokens: Option<u64>,
 }
 
@@ -538,7 +538,7 @@ mod tests {
             .unwrap();
         assert_eq!(stats.calls, 1);
         assert_eq!(stats.fails, 0);
-        assert_eq!(stats.input_tokens, 42);
+        assert_eq!(stats.input_tokens, Some(42));
     }
 
     #[test]
@@ -558,6 +558,56 @@ mod tests {
             .expect("response");
         assert_eq!(response.vectors[0], Some(vec![0.1, 0.2]));
         mock.assert();
+    }
+
+    #[test]
+    fn embed_batch_succeeds_when_total_tokens_has_the_wrong_json_type() {
+        for malformed in [
+            serde_json::json!("42"),
+            serde_json::json!(-1),
+            serde_json::json!(1.5),
+            serde_json::Value::Null,
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let inner = crate::analytics::test_inner(dir.path());
+            let handle = inner.test_start_command();
+
+            let server = httpmock::MockServer::start();
+            let mock = server.mock(|when, then| {
+                when.method(httpmock::Method::POST).path("/embeddings");
+                then.status(200).json_body(serde_json::json!({
+                    "data": [{"index": 0, "embedding": [0.1, 0.2]}],
+                    "usage": {"total_tokens": malformed.clone()}
+                }));
+            });
+            let mut cfg = config(server.url(""));
+            cfg.analytics = Some((inner.clone(), handle));
+            let provider = OpenAiProvider::new(cfg).expect("provider");
+
+            let response = provider
+                .embed_batch(&["hello".to_string()])
+                .unwrap_or_else(|e| {
+                    panic!("malformed total_tokens {malformed:?} discarded the response: {e}")
+                });
+            assert_eq!(response.vectors[0], Some(vec![0.1, 0.2]));
+            mock.assert();
+
+            let state = inner.test_end_command(handle).unwrap();
+            let stats = state
+                .providers
+                .get(&(
+                    "embedding".to_string(),
+                    "openai".to_string(),
+                    "text-embedding-3-small".to_string(),
+                ))
+                .unwrap();
+            assert_eq!(stats.calls, 1);
+            assert_eq!(stats.fails, 0);
+            assert_eq!(
+                stats.input_tokens, None,
+                "malformed total_tokens must not be coerced into a bogus count"
+            );
+        }
     }
 
     #[test]
