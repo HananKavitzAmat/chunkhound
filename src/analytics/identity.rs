@@ -7,6 +7,7 @@
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 use std::fs;
+use std::io::Write;
 use std::path::Path;
 
 /// `None` means "no identity in the payload" (`anonymous` mode, or an
@@ -48,10 +49,14 @@ fn hashed_identity(os_username: &str, salt_path: &Path) -> String {
 /// uploaded, logged, or transmitted. Deliberately not a shared org-wide
 /// salt: anyone holding a shared salt could precompute a rainbow table
 /// against a directory of company usernames, fully reversing every hash.
+/// For that same reason the file is created (and, if found wider, tightened)
+/// to `0600` on Unix — a world-readable salt lets anyone else on the box
+/// read it and do exactly that.
 fn load_or_create_salt(path: &Path) -> String {
     if let Ok(existing) = fs::read_to_string(path) {
         let trimmed = existing.trim();
         if !trimmed.is_empty() {
+            tighten_permissions(path);
             return trimmed.to_string();
         }
     }
@@ -63,9 +68,46 @@ fn load_or_create_salt(path: &Path) -> String {
     }
     // Best-effort persist; if this fails, the salt is still usable for the
     // current process, it just won't be stable across restarts.
-    let _ = fs::write(path, &hex);
+    write_salt_file(path, &hex);
     hex
 }
+
+#[cfg(unix)]
+fn write_salt_file(path: &Path, hex: &str) {
+    use std::os::unix::fs::OpenOptionsExt;
+    let result = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+        .and_then(|mut f| f.write_all(hex.as_bytes()));
+    if let Err(e) = result {
+        log::warn!("analytics: failed to persist salt file: {e}");
+    }
+}
+
+#[cfg(not(unix))]
+fn write_salt_file(path: &Path, hex: &str) {
+    let _ = fs::write(path, hex);
+}
+
+/// Best-effort narrow-down for a salt file that predates this `0600`
+/// enforcement (or was recreated by something else). Never widens
+/// permissions, never errors the caller — the salt is still usable either
+/// way, this is defense-in-depth, not a correctness requirement.
+#[cfg(unix)]
+fn tighten_permissions(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Ok(metadata) = fs::metadata(path) {
+        if metadata.permissions().mode() & 0o777 != 0o600 {
+            let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn tighten_permissions(_path: &Path) {}
 
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -111,6 +153,36 @@ mod tests {
         fs::remove_file(&salt_path).unwrap();
         let second = payload_identity("hashed", "jsmith", &salt_path).unwrap();
         assert_ne!(first, second);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn salt_file_is_created_with_owner_only_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let salt_path = dir.path().join("salt");
+        payload_identity("hashed", "jsmith", &salt_path).unwrap();
+
+        let mode = fs::metadata(&salt_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "salt file must not be group/world readable");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn salt_file_permissions_are_tightened_if_found_wider() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let salt_path = dir.path().join("salt");
+        fs::write(&salt_path, "0123456789abcdef0123456789abcdef").unwrap();
+        fs::set_permissions(&salt_path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        payload_identity("hashed", "jsmith", &salt_path).unwrap();
+
+        let mode = fs::metadata(&salt_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "a pre-existing wide-open salt must be tightened"
+        );
     }
 
     #[test]
