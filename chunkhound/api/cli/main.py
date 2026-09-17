@@ -288,23 +288,29 @@ async def async_main() -> None:
         f"duration={config_validation_duration:.3f}s",
     )
 
-    analytics_recorder = ch_analytics.build_recorder(
-        getattr(config, "analytics", None), config.target_dir or Path.cwd()
-    )
-    _save_sensitive_data = getattr(
-        getattr(config, "analytics", None), "save_sensitive_data", False
-    )
-    analytics_handle = (
-        ch_analytics.start_command(
+    # `mcp`/`_daemon` build and own their own recorder (one per server
+    # process, see mcp_server/base.py) -- constructing a second one here
+    # would spin up a redundant background flush thread + reqwest client
+    # for the lifetime of that long-running process. `_quickresearch` is an
+    # internal subprocess, not a user-facing entry point. Only build a
+    # recorder at all for commands this hook actually wraps.
+    if args.command in _ANALYTICS_WRAPPED_COMMANDS:
+        analytics_recorder = ch_analytics.build_recorder(
+            getattr(config, "analytics", None), config.target_dir or Path.cwd()
+        )
+        _save_sensitive_data = getattr(
+            getattr(config, "analytics", None), "save_sensitive_data", False
+        )
+        analytics_handle = ch_analytics.start_command(
             analytics_recorder,
             args.command,
             "cli",
             _analytics_action_fields(args.command, args),
             _save_sensitive_data,
         )
-        if args.command in _ANALYTICS_WRAPPED_COMMANDS
-        else 0
-    )
+    else:
+        analytics_recorder = None
+        analytics_handle = 0
 
     try:
         if args.command == "index":

@@ -23,7 +23,8 @@ struct VoyageEmbedding {
 
 #[derive(Deserialize)]
 struct VoyageUsage {
-    total_tokens: u64,
+    #[serde(default)]
+    total_tokens: Option<u64>,
 }
 
 pub(crate) struct VoyageAiProvider {
@@ -154,7 +155,7 @@ fn parse_response(
         }
         vectors[item.index] = Some(item.embedding);
     }
-    let input_tokens = payload.usage.map(|u| u.total_tokens);
+    let input_tokens = payload.usage.and_then(|u| u.total_tokens);
     let vectors: Result<Vec<Vec<f32>>, PipelineError> = vectors
         .into_iter()
         .map(|v| {
@@ -298,6 +299,25 @@ mod tests {
         assert_eq!(stats.calls, 1);
         assert_eq!(stats.fails, 0);
         assert_eq!(stats.input_tokens, 17);
+    }
+
+    #[test]
+    fn embed_batch_succeeds_when_usage_object_is_missing_total_tokens() {
+        let server = httpmock::MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(httpmock::Method::POST).path("/embeddings");
+            then.status(200).json_body(serde_json::json!({
+                "data": [{"index": 0, "embedding": [0.1, 0.2]}],
+                "usage": {"total_tokens_used": 17}
+            }));
+        });
+        let provider = VoyageAiProvider::new(config(server.url(""))).expect("provider");
+
+        let response = provider
+            .embed_batch(&["hello".to_string()])
+            .expect("response");
+        assert_eq!(response.vectors[0], Some(vec![0.1, 0.2]));
+        mock.assert();
     }
 
     #[test]

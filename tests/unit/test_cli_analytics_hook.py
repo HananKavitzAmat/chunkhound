@@ -233,6 +233,28 @@ async def test_mcp_command_is_not_wrapped_by_the_cli_hook(
     await cli_main.async_main()
 
     assert _read_events(buffer_dir) == []
+    # "mcp" builds and owns its own recorder (one per server process, see
+    # mcp_server/base.py) -- the CLI hook must not construct a second,
+    # redundant one (background flush thread + reqwest client) just to
+    # never use it. No recorder built means the buffer dir is never created.
+    assert not buffer_dir.exists()
+
+
+@pytest.mark.asyncio
+async def test_daemon_command_is_not_wrapped_by_the_cli_hook(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    args = SimpleNamespace(command="_daemon", verbose=False)
+    buffer_dir = _patch_common(monkeypatch, args, tmp_path)
+
+    from chunkhound.api.cli.commands import daemon as daemon_module
+
+    monkeypatch.setattr(daemon_module, "daemon_command", _ok_command)
+
+    await cli_main.async_main()
+
+    assert _read_events(buffer_dir) == []
+    assert not buffer_dir.exists()
 
 
 async def _ok_command(args, config) -> None:
