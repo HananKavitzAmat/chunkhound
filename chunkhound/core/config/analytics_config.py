@@ -6,18 +6,19 @@ the Rust extension (`chunkhound_native.AnalyticsRecorder`); this module only
 handles config precedence (CLI/env/file/defaults), matching every other
 sub-config here.
 
-Deliberately excluded from this model: the S3 write credential. It is read
-directly from the CHUNKHOUND_AWS_ACCESS_KEY_ID/CHUNKHOUND_AWS_SECRET_ACCESS_KEY
-environment variables (see chunkhound/core/analytics/recorder.py) -- not the
-standard AWS_* names, so this never silently picks up ambient AWS
-credentials set for an unrelated tool -- never as a pydantic field here, so
-it can never end up persisted in a .chunkhound.json file even by accident.
+The S3 write credential (`s3_access_key`/`s3_secret_key`) follows the same
+pattern as `EmbeddingConfig.api_key`: typed as `SecretStr` so it is masked in
+`__repr__` and in any `model_dump()`/JSON serialization, and sourced from
+either a `.chunkhound.json` file or the CHUNKHOUND_AWS_ACCESS_KEY_ID/
+CHUNKHOUND_AWS_SECRET_ACCESS_KEY environment variables (not the standard
+AWS_* names, so this never silently picks up ambient AWS credentials set for
+an unrelated tool).
 """
 
 import os
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 
 
 class AnalyticsConfig(BaseModel):
@@ -61,6 +62,23 @@ class AnalyticsConfig(BaseModel):
     s3_bucket: str | None = Field(
         default=None,
         description="Target bucket name for usage batch objects",
+    )
+
+    s3_access_key: SecretStr | None = Field(
+        default=None,
+        description=(
+            "Access key ID for the S3/MinIO write credential. Not the "
+            "standard AWS_ACCESS_KEY_ID env var name -- see module docstring"
+        ),
+    )
+
+    s3_secret_key: SecretStr | None = Field(
+        default=None,
+        description=(
+            "Secret access key for the S3/MinIO write credential. Not the "
+            "standard AWS_SECRET_ACCESS_KEY env var name -- see module "
+            "docstring"
+        ),
     )
 
     flush_interval_seconds: int = Field(
@@ -108,6 +126,15 @@ class AnalyticsConfig(BaseModel):
         if bucket := os.getenv("CHUNKHOUND_ANALYTICS__S3_BUCKET"):
             config["s3_bucket"] = bucket
 
+        # Deliberately not the standard AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY
+        # names, so this never silently picks up ambient AWS credentials set
+        # for an unrelated tool (e.g. a different AWS CLI profile).
+        if access_key := os.getenv("CHUNKHOUND_AWS_ACCESS_KEY_ID"):
+            config["s3_access_key"] = access_key
+
+        if secret_key := os.getenv("CHUNKHOUND_AWS_SECRET_ACCESS_KEY"):
+            config["s3_secret_key"] = secret_key
+
         if flush_interval := os.getenv("CHUNKHOUND_ANALYTICS__FLUSH_INTERVAL_SECONDS"):
             try:
                 config["flush_interval_seconds"] = int(flush_interval)
@@ -130,7 +157,10 @@ class AnalyticsConfig(BaseModel):
 
     def __repr__(self) -> str:
         """String representation of analytics configuration."""
+        access_key_display = "***" if self.s3_access_key else None
+        secret_key_display = "***" if self.s3_secret_key else None
         return (
             f"AnalyticsConfig(enabled={self.enabled}, anonymize={self.anonymize}, "
-            f"save_sensitive_data={self.save_sensitive_data})"
+            f"save_sensitive_data={self.save_sensitive_data}, "
+            f"s3_access_key={access_key_display}, s3_secret_key={secret_key_display})"
         )
