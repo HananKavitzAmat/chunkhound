@@ -159,9 +159,14 @@ class OpenAILLMProvider(OpenAICompatibleProvider):
     async def _create_response(self, **kwargs: Any) -> Any:
         """Single instrumented chokepoint for responses.create(), used by
         every Responses API caller. Retries are SDK-internal (max_retries=
-        on the client), so one record_provider_call per invocation here is
-        correct -- mirrors OpenAICompatibleProvider._create_chat_completion
-        for the Chat Completions API."""
+        on the client): one call here can trigger several real HTTP
+        attempts that never surface individually, so record_provider_call
+        counts the outcome after the SDK's retry budget is exhausted, not
+        per-HTTP-attempt. A transient failure the SDK silently retries past
+        never appears in analytics -- mirrors
+        OpenAICompatibleProvider._create_chat_completion for the Chat
+        Completions API, and differs from the embedding/rerank providers,
+        which record one call per real manual-retry-loop attempt."""
         try:
             response = await self._client.responses.create(**kwargs)
         except Exception as exc:

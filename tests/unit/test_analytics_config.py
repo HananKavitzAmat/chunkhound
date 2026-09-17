@@ -1,5 +1,7 @@
 """Unit tests for analytics configuration parsing."""
 
+import json
+import re
 from pathlib import Path
 
 import pytest
@@ -97,3 +99,36 @@ def test_config_picks_up_analytics_env_vars(
 
     assert config.analytics.enabled is True
     assert config.analytics.anonymize == "anonymous"
+
+
+def test_no_credential_shaped_field_on_analytics_config() -> None:
+    """Regression guard for the module's own stated invariant (see the
+    module docstring): the S3 write credential must never become a pydantic
+    field here, since any field on this model can end up persisted in a
+    .chunkhound.json file. Matches on shape (key/secret/credential/token in
+    the name) rather than the two current env-var-sourced names, so this
+    still catches a differently-named credential field added later."""
+    credential_like = re.compile(r"key|secret|credential|token", re.IGNORECASE)
+    offending = [
+        name for name in AnalyticsConfig.model_fields if credential_like.search(name)
+    ]
+    assert offending == []
+
+
+def test_config_to_dict_never_leaks_analytics_credential_env_vars(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The S3 credential is read straight from the environment by
+    chunkhound/core/analytics/recorder.py, never through AnalyticsConfig --
+    so it must never round-trip into Config.to_dict() (used for e.g.
+    persisting/echoing config), no matter what else changes in this model."""
+    sentinel_key = "AKIA_SENTINEL_DO_NOT_SERIALIZE"
+    sentinel_secret = "SENTINEL_SECRET_DO_NOT_SERIALIZE"
+    monkeypatch.setenv("CHUNKHOUND_AWS_ACCESS_KEY_ID", sentinel_key)
+    monkeypatch.setenv("CHUNKHOUND_AWS_SECRET_ACCESS_KEY", sentinel_secret)
+
+    config = Config(target_dir=tmp_path)
+    serialized = json.dumps(config.to_dict(), default=str)
+
+    assert sentinel_key not in serialized
+    assert sentinel_secret not in serialized

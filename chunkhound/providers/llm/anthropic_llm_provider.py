@@ -664,6 +664,16 @@ class AnthropicLLMProvider(LLMProvider):
         Uses the beta endpoint when beta features are enabled, otherwise
         uses the standard messages endpoint.
 
+        Also the single instrumented analytics chokepoint for this provider.
+        Retries are SDK-internal (max_retries= on the client): one call here
+        can trigger several real HTTP attempts that never surface
+        individually, so record_provider_call counts the outcome after the
+        SDK's retry budget is exhausted, not per-HTTP-attempt. A transient
+        failure the SDK silently retries past never appears in analytics.
+        This differs from the embedding/rerank providers, which wrap their
+        own manual retry loop and record one call per real attempt -- an
+        accepted fidelity tradeoff for the LLM path, not a bug.
+
         Args:
             request_kwargs: Request parameters for the API call
 
