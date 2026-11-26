@@ -41,6 +41,7 @@ pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git require
 # Shared ``backend`` fixture: parametrizes over IGNORE_BACKENDS and skips
 # libgit2 when pygit2 is missing (tests/ignore/_backends.py).
 backend = _backends.backend
+skip_unless_production_backend = _backends.skip_unless_production_backend
 
 
 def _write(path: Path, text: str = "x") -> None:
@@ -177,6 +178,9 @@ async def test_batch_is_backend_independent_in_git_layouts(
     ChunkHound check. If batch ever starts reading the gitignore backend, this
     fails and the realtime comparison below must be revisited.
     """
+    skip_unless_production_backend(
+        backend, "test_batch_is_backend_independent_in_git_layouts"
+    )
     root_py = tmp_path / "py" / "repo"
     root_lg = tmp_path / "lg" / "repo"
     for root in (root_py, root_lg):
@@ -211,6 +215,9 @@ async def test_batch_and_realtime_agree_on_every_file(
     backend-independent (see test_batch_is_backend_independent_in_git_layouts),
     so the backend under test varies the realtime side only.
     """
+    skip_unless_production_backend(
+        backend, "test_batch_and_realtime_agree_on_every_file"
+    )
     root = tmp_path / "repo"
     root.mkdir()
     builder(root, monkeypatch)
@@ -237,6 +244,7 @@ async def test_info_exclude_per_side_behavior(
     so it drops sec/a.py for both backends. Realtime python admits it because
     the python engine never reads info/exclude; libgit2 realtime drops it.
     """
+    skip_unless_production_backend(backend, "test_info_exclude_per_side_behavior")
     root = tmp_path / "repo"
     root.mkdir()
     _layout_info_exclude(root, monkeypatch)

@@ -16,6 +16,7 @@ from tempfile import TemporaryDirectory
 from typing import Any
 
 from chunkhound_native import (
+    IgnoreMatcher,
     IndexingPipeline,
     ParseCallConfig,
     PipelineReport,
@@ -50,6 +51,15 @@ def main() -> None:
         source_file.write_text("def sample():\n    return 1\n")
         discovered = scan_files(str(root), ["py"])
         assert str(source_file) in discovered
+
+        ignored_dir = root / "vendor"
+        ignored_dir.mkdir()
+        (root / ".gitignore").write_text("vendor/\n")
+        matcher = IgnoreMatcher(
+            str(root), ["gitignore"], ".chignore", [], "python", None
+        )
+        assert matcher.should_index(str(source_file)) is True
+        assert matcher.matches(str(ignored_dir / "lib.py"), False) is True
 
         db_dir = root / "db"
         db_dir.mkdir()

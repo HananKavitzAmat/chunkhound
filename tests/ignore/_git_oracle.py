@@ -32,13 +32,8 @@ from __future__ import annotations
 import subprocess
 from collections.abc import Iterable
 from pathlib import Path
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from chunkhound.utils.ignore_engine import (
-        RepoAwareIgnoreEvaluator,
-        RepoAwareLibgit2Evaluator,
-    )
+from tests.ignore._backends import ignore_mode, is_rust
 
 
 def run_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -74,9 +69,7 @@ def git_ignored(paths: Iterable[str], repo: Path) -> dict[str, bool]:
     return out
 
 
-def assert_engine_backend(
-    eng: RepoAwareIgnoreEvaluator | RepoAwareLibgit2Evaluator, backend: str
-) -> None:
+def assert_engine_backend(eng: object, backend: str) -> None:
     """Fail loudly if the built engine is not the requested backend.
 
     libgit2 can silently degrade: when pygit2 imports but a repo fails to
@@ -88,7 +81,14 @@ def assert_engine_backend(
         RepoAwareIgnoreEvaluator,
         RepoAwareLibgit2Evaluator,
     )
+    from chunkhound.utils.rust_ignore_matcher import RustIgnoreMatcher
 
+    if is_rust(backend):
+        assert type(eng) is RustIgnoreMatcher, (
+            f"requested backend {backend!r} but engine is {type(eng).__name__}"
+        )
+        assert eng.backend == ignore_mode(backend)
+        return
     expected = {
         "python": RepoAwareIgnoreEvaluator,
         "libgit2": RepoAwareLibgit2Evaluator,
@@ -110,8 +110,25 @@ def build_backend_engine(
     *,
     sources: Iterable[str] = ("gitignore",),
     config_exclude: Iterable[str] = (),
-) -> RepoAwareIgnoreEvaluator | RepoAwareLibgit2Evaluator:
-    """Build the repo-aware engine for ``backend`` and verify what was built."""
+) -> object:
+    """Build the engine for ``backend`` and verify what was built.
+
+    Rust values build the native matcher in the mode they stand for
+    (see tests/ignore/_backends.py). The Python engine is built through
+    build_repo_aware_ignore_engine, as production does.
+    """
+    if is_rust(backend):
+        from chunkhound.utils.rust_ignore_matcher import RustIgnoreMatcher
+
+        engine: object = RustIgnoreMatcher(
+            repo,
+            sources=list(sources),
+            chignore_file=".chignore",
+            config_exclude=list(config_exclude),
+            backend=ignore_mode(backend),
+        )
+        assert_engine_backend(engine, backend)
+        return engine
     from chunkhound.utils.ignore_engine import build_repo_aware_ignore_engine
 
     eng = build_repo_aware_ignore_engine(
@@ -125,6 +142,14 @@ def build_backend_engine(
     return eng
 
 
+def is_ignored(eng: object, path: Path, is_dir: bool = False) -> bool:
+    """Uniform decision: Python engines return MatchInfo|None; Rust returns bool."""
+    result = eng.matches(path, is_dir=is_dir)  # type: ignore[attr-defined]
+    if isinstance(result, bool):
+        return result
+    return result is not None
+
+
 def engine_ignored(
     paths: Iterable[str],
     repo: Path,
@@ -133,4 +158,4 @@ def engine_ignored(
 ) -> dict[str, bool]:
     """Return {path: is_ignored} from the repo-aware engine for ``backend``."""
     eng = build_backend_engine(repo, backend, config_exclude=config_exclude or [])
-    return {p: eng.matches(repo / p, is_dir=False) is not None for p in paths}
+    return {p: is_ignored(eng, repo / p) for p in paths}

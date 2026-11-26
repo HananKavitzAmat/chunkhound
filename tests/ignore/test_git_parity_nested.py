@@ -17,6 +17,7 @@ from tests.ignore._git_oracle import engine_ignored, git_ignored, run_git
 async def test_git_parity_nested_negation_and_anchoring(
     tmp_path: Path, backend: str, request: pytest.FixtureRequest
 ) -> None:
+    # pygit2-specific gap; the Rust libgit2 emulation matches git here.
     if backend == "libgit2":
         request.applymarker(
             pytest.mark.xfail(

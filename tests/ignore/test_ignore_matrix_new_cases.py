@@ -17,11 +17,13 @@ import pytest
 
 from chunkhound.core.config.config import Config
 from chunkhound.services.indexing_coordinator import IndexingCoordinator
+from tests.ignore._backends import ignore_mode, skip_unless_production_backend
 from tests.ignore._git_oracle import (
     assert_engine_backend,
     build_backend_engine,
     engine_ignored,
     git_ignored,
+    is_ignored,
     run_git,
     write_file,
 )
@@ -95,7 +97,7 @@ def test_info_exclude_is_honored(tmp_path: Path, backend: str) -> None:
     write_file(repo, "pub/a.key")
     rels = ["sec/a.key", "pub/a.key"]
     assert git_ignored(rels, repo) == {"sec/a.key": True, "pub/a.key": False}
-    if backend == "python":
+    if ignore_mode(backend) == "python":
         # Current code: python engine reads only .gitignore files
         # (ignore_engine.py:_read_transformed_gitignore_patterns), so
         # .git/info/exclude is NOT applied and sec/a.key is not ignored.
@@ -118,7 +120,7 @@ def test_chignore_file_is_not_applied(tmp_path: Path, backend: str) -> None:
     write_file(repo, ".chignore", "*.tmp\n")
     write_file(repo, "a.tmp")
     eng = build_backend_engine(repo, backend)
-    assert eng.matches(repo / "a.tmp", is_dir=False) is None
+    assert not is_ignored(eng, repo / "a.tmp")
 
 
 def test_chignore_wiki_claim_python_honors_it(
@@ -141,7 +143,7 @@ def test_chignore_wiki_claim_python_honors_it(
     write_file(repo, ".chignore", "*.tmp\n")
     write_file(repo, "a.tmp")
     eng = build_backend_engine(repo, "python")
-    assert eng.matches(repo / "a.tmp", is_dir=False) is not None
+    assert is_ignored(eng, repo / "a.tmp")
 
 
 # --- tracked-but-ignored ------------------------------------------------------
@@ -181,9 +183,9 @@ def test_config_excludes_apply_through_repo_aware_engine(
         sources=("gitignore", "config"),
         config_exclude=("**/node_modules/**", "*.min.js"),
     )
-    assert eng.matches(repo / "pkg/node_modules/dep/index.js", is_dir=False)
-    assert eng.matches(repo / "src/app.min.js", is_dir=False)
-    assert eng.matches(repo / "src/app.js", is_dir=False) is None
+    assert is_ignored(eng, repo / "pkg/node_modules/dep/index.js")
+    assert is_ignored(eng, repo / "src/app.min.js")
+    assert not is_ignored(eng, repo / "src/app.js")
 
 
 # --- Windows-style separators -------------------------------------------------
@@ -199,7 +201,7 @@ def test_windows_separators_match_on_backend(tmp_path: Path, backend: str) -> No
     write_file(repo, "build/x.txt")
     eng = build_backend_engine(repo, backend)
     win_style = str(repo / "build" / "x.txt").replace("/", "\\")
-    assert eng.matches(Path(win_style), is_dir=False) is not None
+    assert is_ignored(eng, Path(win_style))
 
 
 # --- submodule -----------------------------------------------------------------
@@ -275,6 +277,7 @@ def test_submodule_contents_match_git_for_parent_rule(
 def test_submodule_directory_is_not_ignored_by_parent(
     tmp_path: Path, backend: str, request: pytest.FixtureRequest
 ) -> None:
+    # pygit2-specific gap; the Rust libgit2 emulation matches git here.
     if backend == "libgit2":
         _xfail(
             request,
@@ -331,6 +334,9 @@ async def test_user_exclude_subtree_pattern_walk_uses_requested_backend(
     tmp_path: Path, backend: str
 ) -> None:
     """Plain-directory walk applies the user exclude and builds the asked backend."""
+    skip_unless_production_backend(
+        backend, "test_user_exclude_subtree_pattern_walk_uses_requested_backend"
+    )
     repo = tmp_path / "plain"
     repo.mkdir()
     rels, coordinator = await _batch_files(tmp_path, repo, backend)
@@ -348,6 +354,9 @@ async def test_git_repo_batch_enumerates_with_git_ls_files(
     So the gitignore backend cannot change batch output here. This is the
     reason batch results are backend-independent in git layouts.
     """
+    skip_unless_production_backend(
+        backend, "test_git_repo_batch_enumerates_with_git_ls_files"
+    )
     repo = _init_repo(tmp_path)
     _rels, coordinator = await _batch_files(tmp_path, repo, backend)
     assert coordinator._resolved_discovery_backend == "git_only"
@@ -364,6 +373,9 @@ async def test_git_repo_batch_drops_user_exclude_subtree(
     it. The git_only path applies config excludes only through the `git`
     results and does not evaluate the exclude_patterns argument.
     """
+    skip_unless_production_backend(
+        backend, "test_git_repo_batch_drops_user_exclude_subtree"
+    )
     _xfail(
         request,
         "git discovery backend drops user exclude '**/vendored/**': "
