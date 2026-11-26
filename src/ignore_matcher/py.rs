@@ -1,5 +1,6 @@
 //! PyO3 wrapper around the plain-Rust `IgnoreMatcher`. Owned `String`s cross
-//! into `py.allow_threads`; no `unwrap` on the boundary.
+//! into `py.allow_threads`; construction (which may walk the tree) runs there
+//! too. No `unwrap` on the boundary.
 
 use super::matcher::{Backend, IgnoreMatcher};
 use pyo3::exceptions::PyValueError;
@@ -18,6 +19,7 @@ impl PyIgnoreMatcher {
     #[new]
     #[pyo3(signature = (root, sources, chignore_file, config_exclude, backend, workspace_root_only_gitignore=None))]
     fn new(
+        py: Python<'_>,
         root: String,
         sources: Vec<String>,
         chignore_file: String,
@@ -29,15 +31,16 @@ impl PyIgnoreMatcher {
         let mode = Backend::parse(&backend).ok_or_else(|| {
             PyValueError::new_err(format!("unknown gitignore backend: {backend:?}"))
         })?;
-        Ok(Self {
-            inner: IgnoreMatcher::new(
+        let inner = py.allow_threads(move || {
+            IgnoreMatcher::new(
                 Path::new(&root),
                 &sources,
                 &config_exclude,
                 mode,
                 workspace_root_only_gitignore,
-            ),
-        })
+            )
+        });
+        Ok(Self { inner })
     }
 
     #[pyo3(signature = (path, is_dir=false))]

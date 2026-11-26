@@ -296,7 +296,6 @@ def test_submodule_directory_is_not_ignored_by_parent(
 async def _batch_files(
     tmp_path: Path, repo: Path, backend: str
 ) -> tuple[list[str], IndexingCoordinator]:
-    skip_unless_production_backend(backend)
     from chunkhound.core.types.common import Language
     from chunkhound.parsers.parser_factory import create_parser_for_language
     from chunkhound.providers.database.duckdb_provider import DuckDBProvider
@@ -335,6 +334,9 @@ async def test_user_exclude_subtree_pattern_walk_uses_requested_backend(
     tmp_path: Path, backend: str
 ) -> None:
     """Plain-directory walk applies the user exclude and builds the asked backend."""
+    skip_unless_production_backend(
+        backend, "test_user_exclude_subtree_pattern_walk_uses_requested_backend"
+    )
     repo = tmp_path / "plain"
     repo.mkdir()
     rels, coordinator = await _batch_files(tmp_path, repo, backend)
@@ -352,6 +354,9 @@ async def test_git_repo_batch_enumerates_with_git_ls_files(
     So the gitignore backend cannot change batch output here. This is the
     reason batch results are backend-independent in git layouts.
     """
+    skip_unless_production_backend(
+        backend, "test_git_repo_batch_enumerates_with_git_ls_files"
+    )
     repo = _init_repo(tmp_path)
     _rels, coordinator = await _batch_files(tmp_path, repo, backend)
     assert coordinator._resolved_discovery_backend == "git_only"
@@ -368,6 +373,9 @@ async def test_git_repo_batch_drops_user_exclude_subtree(
     it. The git_only path applies config excludes only through the `git`
     results and does not evaluate the exclude_patterns argument.
     """
+    skip_unless_production_backend(
+        backend, "test_git_repo_batch_drops_user_exclude_subtree"
+    )
     _xfail(
         request,
         "git discovery backend drops user exclude '**/vendored/**': "

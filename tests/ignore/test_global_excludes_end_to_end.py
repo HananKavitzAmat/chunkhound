@@ -98,7 +98,6 @@ def _config(root: Path, tmp_path: Path, backend: str) -> Config:
 
 
 async def _batch_rels(root: Path, tmp_path: Path, backend: str) -> list[str]:
-    skip_unless_production_backend(backend)
     db = DuckDBProvider(":memory:", base_directory=tmp_path)
     db.connect()
     try:
@@ -139,7 +138,6 @@ def _realtime_admitted_in_fresh_interpreter(root: Path) -> set[str]:
 
 
 def _realtime_admitted(root: Path, backend: str) -> set[str]:
-    skip_unless_production_backend(backend)
     flt = RealtimePathFilter(
         config=None,
         root_path=root,
@@ -181,6 +179,9 @@ async def test_batch_in_git_repo_applies_glob_but_not_dir_pattern(
     it. The global 'scratch/' is flattened to '**/scratch/', which does not
     match files under scratch/ (file_patterns.should_exclude_path).
     """
+    skip_unless_production_backend(
+        backend, "test_batch_in_git_repo_applies_glob_but_not_dir_pattern"
+    )
     repo = _git_repo(tmp_path)
     assert await _batch_rels(repo, tmp_path, backend) == ["keep.py", "scratch/a.py"]
 
@@ -189,6 +190,9 @@ async def test_batch_in_git_repo_applies_glob_but_not_dir_pattern(
 async def test_batch_in_git_repo_drops_scratch_dir_like_git(
     tmp_path: Path, global_excludes: Path, backend: str, request: pytest.FixtureRequest
 ) -> None:
+    skip_unless_production_backend(
+        backend, "test_batch_in_git_repo_drops_scratch_dir_like_git"
+    )
     request.applymarker(
         pytest.mark.xfail(
             strict=True,
@@ -221,6 +225,9 @@ async def test_batch_in_plain_dir_does_not_apply_core_excludes(
     build_repo_aware_ignore_engine only reads .gitignore and config excludes for
     a non-repo root. So all three files are kept on both backends.
     """
+    skip_unless_production_backend(
+        backend, "test_batch_in_plain_dir_does_not_apply_core_excludes"
+    )
     plain = _plain_dir(tmp_path)
     assert await _batch_rels(plain, tmp_path, backend) == [
         "keep.py",
@@ -246,6 +253,9 @@ def test_realtime_admission_of_core_excludes_files_per_backend(
     per process, so an earlier libgit2 test (e.g. test_git_parity_slash_anchor)
     would otherwise leave a stale HOME in effect and change this result.
     """
+    skip_unless_production_backend(
+        backend, "test_realtime_admission_of_core_excludes_files_per_backend"
+    )
     repo = _git_repo(tmp_path)
     if ignore_mode(backend) == "libgit2":
         admitted = _realtime_admitted_in_fresh_interpreter(repo)
