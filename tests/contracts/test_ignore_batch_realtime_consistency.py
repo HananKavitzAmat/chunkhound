@@ -41,6 +41,7 @@ pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git require
 # Shared ``backend`` fixture: parametrizes over IGNORE_BACKENDS and skips
 # libgit2 when pygit2 is missing (tests/ignore/_backends.py).
 backend = _backends.backend
+skip_unless_production_backend = _backends.skip_unless_production_backend
 
 
 def _write(path: Path, text: str = "x") -> None:
@@ -138,6 +139,7 @@ def _scoped_config(root: Path, tmp_path: Path, backend: str) -> Config:
 
 
 async def _batch_rels(root: Path, tmp_path: Path, backend: str) -> set[str]:
+    skip_unless_production_backend(backend)
     config = _scoped_config(root, tmp_path, backend)
     provider = DuckDBProvider(tmp_path / "db.duckdb", base_directory=root)
     provider.connect()
@@ -153,6 +155,7 @@ async def _batch_rels(root: Path, tmp_path: Path, backend: str) -> set[str]:
 
 
 def _realtime_rels(root: Path, tmp_path: Path, backend: str) -> set[str]:
+    skip_unless_production_backend(backend)
     config = _scoped_config(root, tmp_path, backend)
     realtime = RealtimePathFilter(config=config, root_path=root)
     return {r for r in _all_visible_files(root) if realtime.should_index(root / r)}
@@ -237,6 +240,7 @@ async def test_info_exclude_per_side_behavior(
     so it drops sec/a.py for both backends. Realtime python admits it because
     the python engine never reads info/exclude; libgit2 realtime drops it.
     """
+    skip_unless_production_backend(backend)
     root = tmp_path / "repo"
     root.mkdir()
     _layout_info_exclude(root, monkeypatch)

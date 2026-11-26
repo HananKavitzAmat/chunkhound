@@ -9,6 +9,7 @@ mod embed;
 mod error;
 mod types;
 
+mod ignore_matcher;
 mod pipeline;
 
 use crate::error::ScanError;
@@ -469,6 +470,7 @@ fn chunkhound_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     pyo3_log::init();
 
     m.add_function(wrap_pyfunction!(scan_files, m)?)?;
+    m.add_class::<ignore_matcher::PyIgnoreMatcher>()?;
 
     m.add_class::<pipeline::IndexingPipeline>()?;
     m.add_class::<pipeline::PipelineReport>()?;

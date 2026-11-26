@@ -37,6 +37,7 @@ from chunkhound.services.realtime_path_filter import (
     RealtimePathFilterSettings,
 )
 from tests.ignore import _backends
+from tests.ignore._backends import ignore_mode, skip_unless_production_backend
 from tests.ignore._git_oracle import git_ignored, run_git, write_file
 
 # Shared ``backend`` fixture (python, libgit2 with pygit2 skip).
@@ -97,6 +98,7 @@ def _config(root: Path, tmp_path: Path, backend: str) -> Config:
 
 
 async def _batch_rels(root: Path, tmp_path: Path, backend: str) -> list[str]:
+    skip_unless_production_backend(backend)
     db = DuckDBProvider(":memory:", base_directory=tmp_path)
     db.connect()
     try:
@@ -137,6 +139,7 @@ def _realtime_admitted_in_fresh_interpreter(root: Path) -> set[str]:
 
 
 def _realtime_admitted(root: Path, backend: str) -> set[str]:
+    skip_unless_production_backend(backend)
     flt = RealtimePathFilter(
         config=None,
         root_path=root,
@@ -244,11 +247,11 @@ def test_realtime_admission_of_core_excludes_files_per_backend(
     would otherwise leave a stale HOME in effect and change this result.
     """
     repo = _git_repo(tmp_path)
-    if backend == "libgit2":
+    if ignore_mode(backend) == "libgit2":
         admitted = _realtime_admitted_in_fresh_interpreter(repo)
     else:
         admitted = _realtime_admitted(repo, backend)
-    expected = {"keep.py"} if backend == "libgit2" else set(ALL_FILES)
+    expected = {"keep.py"} if ignore_mode(backend) == "libgit2" else set(ALL_FILES)
     assert admitted == expected
 
 
